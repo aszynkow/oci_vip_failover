@@ -63,6 +63,14 @@ Add configured secondary IPs to the configured VNIC in OCI:
 python add_ip.py --config vip_config.json
 ```
 
+Starting fresh, create the secondary private IPs and write `vip_config.json` in one run:
+
+```sh
+python add_ip.py --vnic-id <active_vm_primary_vnic_ocid> --ip 10.200.0.213 --ip 10.200.0.214 --region ap-sydney-1 --write-config vip_config.json
+```
+
+`--write-config` creates or updates JSON config with `vnic_id`, `secondary_ips`, and `managed_vips[].private_ip_ocid` from the created or already-present OCI private IP resources. With no path, `--write-config` writes to the file passed by `--config`.
+
 Remove configured secondary IPs from the configured VNIC in OCI:
 
 ```sh

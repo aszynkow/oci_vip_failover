@@ -57,6 +57,16 @@ def load_config(path: str | Path) -> dict[str, Any]:
     return data
 
 
+def write_json_config(path: str | Path, config: dict[str, Any]) -> None:
+    config_path = Path(path).expanduser()
+    if config_path.suffix.lower() in {".yaml", ".yml"}:
+        raise SystemExit("YAML config is not supported. Use a .json path for --write-config.")
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with config_path.open("w", encoding="utf-8") as config_file:
+        json.dump(config, config_file, indent=2)
+        config_file.write("\n")
+
+
 def config_value(cli_value: str | None, config: dict[str, Any], *keys: str, default: str | None = None) -> str | None:
     if cli_value:
         return cli_value
@@ -170,6 +180,70 @@ def assigned_ip_summaries(private_ips: list[Any]) -> list[dict[str, Any]]:
     return sorted(summaries, key=lambda item: (not bool(item.get("is_primary")), item.get("ip_address") or ""))
 
 
+def configured_managed_vips(config: dict[str, Any]) -> dict[str, str]:
+    managed = config.get("managed_vips", [])
+    if not isinstance(managed, list):
+        return {}
+
+    by_ip: dict[str, str] = {}
+    for item in managed:
+        if not isinstance(item, dict):
+            continue
+        ip = item.get("ip") or item.get("private_ip")
+        ocid = item.get("private_ip_ocid") or item.get("ocid")
+        if ip and ocid:
+            by_ip[str(ip)] = str(ocid)
+    return by_ip
+
+
+def merge_config(
+    config: dict[str, Any],
+    args: argparse.Namespace,
+    vnic_id: str,
+    ips: list[str],
+    assigned_private_ips: list[dict[str, Any]],
+) -> dict[str, Any]:
+    merged = dict(config)
+    merged["vnic_id"] = vnic_id
+
+    for key, value in (
+        ("region", args.region),
+        ("profile", args.profile),
+        ("auth_mode", args.auth_mode),
+        ("oci_config_file", args.oci_config_file),
+        ("display_name_prefix", args.display_name_prefix),
+    ):
+        if value:
+            merged[key] = value
+
+    existing_ips = secondary_ips(None, config) if config.get("secondary_ips") else []
+    all_ips: list[str] = []
+    for ip in [*existing_ips, *ips]:
+        if ip not in all_ips:
+            all_ips.append(ip)
+    merged["secondary_ips"] = all_ips
+
+    managed_by_ip = configured_managed_vips(config)
+    for private_ip in assigned_private_ips:
+        ip = private_ip.get("ip_address")
+        ocid = private_ip.get("id")
+        if ip and ocid:
+            managed_by_ip[str(ip)] = str(ocid)
+
+    merged["managed_vips"] = [
+        {"ip": ip, "private_ip_ocid": managed_by_ip[ip]}
+        for ip in all_ips
+        if ip in managed_by_ip
+    ]
+    return merged
+
+
+def write_config_path(args: argparse.Namespace) -> str | None:
+    if args.write_config is None:
+        return None
+    return args.config if args.write_config == "" else args.write_config
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to VIP JSON config.")
@@ -181,6 +255,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ip", dest="ips", action="append", help="Secondary IPv4 address to assign. Repeat or comma-separate.")
     parser.add_argument("--display-name-prefix", help="Display name prefix for new OCI private IP objects.")
     parser.add_argument("--dry-run", action="store_true", help="Show actions without creating private IPs.")
+    parser.add_argument(
+        "--write-config",
+        nargs="?",
+        const="",
+        metavar="PATH",
+        help="Create/update VIP JSON config after assignment. With no PATH, writes to --config.",
+    )
     parser.add_argument(
         "--show-assigned",
         "--show-assigned-ips",
@@ -201,6 +282,8 @@ def main() -> int:
     existing_private_ips = list_private_ips(oci, client, vnic_id)
 
     if args.show_assigned:
+        if write_config_path(args):
+            raise SystemExit("--write-config cannot be used with --show-assigned.")
         print(json.dumps(
             {
                 "vnic_id": vnic_id,
@@ -243,6 +326,19 @@ def main() -> int:
 
         response = client.create_private_ip(details)
         result["created"].append(private_ip_summary(response.data))
+
+    assigned_for_config = [*result["already_present"], *result["created"]]
+    target_config_path = write_config_path(args)
+    if target_config_path:
+        generated_config = merge_config(config, args, vnic_id, ips, assigned_for_config)
+        if args.dry_run:
+            result["would_write_config"] = {
+                "path": str(Path(target_config_path).expanduser()),
+                "config": generated_config,
+            }
+        else:
+            write_json_config(target_config_path, generated_config)
+            result["written_config"] = str(Path(target_config_path).expanduser())
 
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
