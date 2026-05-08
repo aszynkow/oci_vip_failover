@@ -19,7 +19,22 @@ The goal of this repo is simple: copy it onto each Windows VM, keep a local `vip
 
 ## VM Setup
 
-Copy this repo to each VM, for example:
+Install Git for Windows and Python 3 on each VM, then clone this repo. Replace `<repo-url>` with the GitHub URL after the repo is pushed.
+
+```powershell
+cd C:\
+git clone <repo-url> C:\oci-vip-failover
+cd C:\oci-vip-failover
+```
+
+If the repo already exists on the VM, update it instead:
+
+```powershell
+cd C:\oci-vip-failover
+git pull
+```
+
+The expected install path is:
 
 ```text
 C:\oci-vip-failover\
