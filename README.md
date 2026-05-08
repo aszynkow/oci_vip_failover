@@ -1,38 +1,54 @@
 # OCI VIP Failover Scripts
 
-Standalone scripts for assigning, removing, and forcibly taking over OCI VIP secondary private IPs.
+Standalone VM-side scripts for OCI VIP failover.
 
-The scripts do not depend on the original VIP repo helper modules. They load `vip_config.json` from this repo root by default, support OCI config-file auth or instance-principal auth, and install the OCI Python SDK only if the `oci` package is missing. Use `--no-install-deps` to disable automatic package installation.
+The goal of this repo is simple: copy it onto each Windows VM, keep a local `vip_config.json` beside the scripts, and run the failover process from whichever VM should own the VIPs. The Python scripts do not depend on the original VIP repo helper modules. They support OCI config-file auth or instance-principal auth, and install the OCI Python SDK only if the `oci` package is missing. Use `--no-install-deps` to disable automatic package installation.
 
 ## Files
 
 ```text
 .
-├── add_ip.py                # create/assign secondary private IPs on a VNIC
-├── remove_ip.py             # delete secondary private IPs from a VNIC
-├── startup_takeover.py      # move configured private IP OCIDs to this VM VNIC
-└── vip_config.example.json  # template config
+|-- add_ip.py                # create/assign secondary private IPs on a VNIC
+|-- remove_ip.py             # delete secondary private IPs from a VNIC
+|-- startup_takeover.py      # move configured private IP OCIDs to this VM VNIC
+|-- vip_config.example.json  # template config
+`-- windows/
+    |-- add_ip.ps1           # bind VIPs to the local Windows NIC
+    `-- remove_ip.ps1        # remove VIPs from the local Windows NIC
 ```
+
+## VM Setup
+
+Copy this repo to each VM, for example:
+
+```text
+C:\oci-vip-failover\
+```
+
+On each VM, create the local config:
+
+```powershell
+cd C:\oci-vip-failover
+copy vip_config.example.json vip_config.json
+```
+
+Edit `vip_config.json` and set that VM primary `vnic_id`, the shared `secondary_ips`, and each `managed_vips[].private_ip_ocid`.
+
+Python must be available in `PATH`. The scripts will install the OCI SDK automatically if it is missing.
 
 ## Config
 
-Create a local config from the example:
-
-```sh
-cp vip_config.example.json vip_config.json
-```
-
-Set `region`, `vnic_id`, `secondary_ips`, and `managed_vips[].private_ip_ocid`.
+Use one `vip_config.json` per VM. The VIP IPs and private IP OCIDs are shared, but `vnic_id` should be the primary VNIC OCID for the VM where the file is deployed.
 
 ## Commands
 
-Add configured secondary IPs to the configured VNIC:
+Add configured secondary IPs to the configured VNIC in OCI:
 
 ```sh
 python add_ip.py --config vip_config.json
 ```
 
-Remove configured secondary IPs from the configured VNIC:
+Remove configured secondary IPs from the configured VNIC in OCI:
 
 ```sh
 python remove_ip.py --config vip_config.json
@@ -43,6 +59,8 @@ Force takeover on the VM where the command is running:
 ```powershell
 python startup_takeover.py --config vip_config.json
 ```
+
+This moves the configured OCI private IP resources to the current VM primary VNIC, then binds the VIPs to the local Windows NIC.
 
 Preview changes:
 
@@ -59,3 +77,19 @@ python startup_takeover.py --config vip_config.json --auth-mode instance_princip
 ```
 
 `startup_takeover.py` moves the OCI private IP resource away from whichever VNIC currently owns it. It does not log in to the old VM to remove a stale Windows OS IP.
+
+## Windows NIC Helpers
+
+Bind configured VIPs to the local Windows NIC:
+
+```powershell
+.\windows\add_ip.ps1 -ConfigPath .\vip_config.json
+```
+
+Remove configured VIPs from the local Windows NIC:
+
+```powershell
+.\windows\remove_ip.ps1 -ConfigPath .\vip_config.json
+```
+
+These PowerShell scripts only change the local Windows OS network configuration. They do not move or delete OCI private IP resources.
