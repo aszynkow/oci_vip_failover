@@ -19,6 +19,7 @@ variableGroups:
       - vm_ocpus
       - vm_memory_in_gbs
       - boot_volume_size_gbs
+      - windows_license_type
       - assign_public_ip
       - hostname_label
       - private_ip
@@ -326,6 +327,16 @@ variables:
     type: string
     visible: false
     default: "Server 2022 Standard"
+
+  windows_license_type:
+    type: enum
+    title: "Windows License Type"
+    description: "Choose OCI_PROVIDED for OCI-provided metered Windows licensing, or BRING_YOUR_OWN_LICENSE when you have eligible Microsoft BYOL rights."
+    required: true
+    default: "OCI_PROVIDED"
+    enum:
+      - "OCI_PROVIDED"
+      - "BRING_YOUR_OWN_LICENSE"
 
   vm_baseline_ocpu_utilization:
     type: string

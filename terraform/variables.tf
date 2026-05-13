@@ -119,6 +119,17 @@ variable "windows_image_operating_system_version" {
   default     = "Server 2022 Standard"
 }
 
+variable "windows_license_type" {
+  description = "Windows Server license type for the instance. OCI_PROVIDED uses OCI-provided metered Windows licensing; BRING_YOUR_OWN_LICENSE requires eligible Microsoft BYOL rights."
+  type        = string
+  default     = "OCI_PROVIDED"
+
+  validation {
+    condition     = contains(["OCI_PROVIDED", "BRING_YOUR_OWN_LICENSE"], var.windows_license_type)
+    error_message = "windows_license_type must be OCI_PROVIDED or BRING_YOUR_OWN_LICENSE."
+  }
+}
+
 variable "image_ocid" {
   description = "Optional explicit image OCID. Leave empty to use the latest Windows Server 2022 Standard platform image matching vm_shape."
   type        = string

@@ -108,6 +108,11 @@ resource "oci_core_instance" "windows_vm" {
     boot_volume_vpus_per_gb = var.boot_volume_vpus_per_gb
   }
 
+  licensing_configs {
+    type         = "WINDOWS"
+    license_type = var.windows_license_type
+  }
+
   agent_config {
     is_management_disabled = var.management_agent_disabled
     is_monitoring_disabled = var.monitoring_agent_disabled
