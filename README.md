@@ -381,10 +381,11 @@ If the OCI CLI is not installed, the scripts try to install it in the same run:
 2. Oracle's PowerShell OCI CLI installer when Python is missing.
 
 The PowerShell installer path needs outbound HTTPS to `raw.githubusercontent.com`.
-The script asks the installer to place Python under `%USERPROFILE%\oci-python`
-and usually places the `oci` launcher in `%USERPROFILE%\bin`. If Windows still
-blocks Python installation, run the same command from an elevated PowerShell once.
-Pass `-NoInstallOciCli` to disable the auto-install behavior.
+To avoid Windows long-path failures during the OCI CLI package install, the
+scripts tell Oracle's installer to use short root paths: `C:\oci-python`,
+`C:\oci-cli`, and `C:\oci-cli-bin`. If Windows blocks creation of those
+folders or Python installation, run the same command from an elevated
+PowerShell once. Pass `-NoInstallOciCli` to disable the auto-install behavior.
 
 ---
 

@@ -328,6 +328,11 @@ function Get-OciBaseArgs {
 function Refresh-OciCliPath {
   $Candidates = New-Object System.Collections.Generic.List[string]
 
+  $Candidates.Add('C:\oci-cli-bin')
+  $Candidates.Add('C:\oci-cli\Scripts')
+  $Candidates.Add('C:\oci-python')
+  $Candidates.Add('C:\oci-python\Scripts')
+
   if ($env:APPDATA) {
     Get-ChildItem -Directory -Path (Join-Path $env:APPDATA 'Python\Python*\Scripts') -ErrorAction SilentlyContinue |
       ForEach-Object { $Candidates.Add($_.FullName) }
@@ -351,6 +356,14 @@ function Refresh-OciCliPath {
     if ((Test-Path -LiteralPath $Candidate) -and ($CurrentParts -notcontains $Candidate)) {
       $env:Path = "$env:Path$([System.IO.Path]::PathSeparator)$Candidate"
     }
+  }
+}
+
+function New-DirectoryIfMissing {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
   }
 }
 
@@ -389,11 +402,33 @@ function Install-OciCliWithOracleInstaller {
     return $false
   }
 
-  $InstallerArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $InstallerPath, '-AcceptAllDefaults')
-  if ($env:USERPROFILE) {
-    $PythonInstallLocation = Join-Path $env:USERPROFILE 'oci-python'
-    $InstallerArgs += @('-PythonInstallLocation', $PythonInstallLocation)
+  $InstallDir = 'C:\oci-cli'
+  $ExecDir = 'C:\oci-cli-bin'
+  $PythonInstallLocation = 'C:\oci-python'
+
+  try {
+    New-DirectoryIfMissing -Path $InstallDir
+    New-DirectoryIfMissing -Path $ExecDir
+    New-DirectoryIfMissing -Path $PythonInstallLocation
+  } catch {
+    $Errors.Add("Could not create short OCI CLI install directories under C:\. Run PowerShell as Administrator or install OCI CLI manually. $($_.Exception.Message)")
+    return $false
   }
+
+  $InstallerArgs = @(
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    $InstallerPath,
+    '-AcceptAllDefaults',
+    '-InstallDir',
+    $InstallDir,
+    '-ExecDir',
+    $ExecDir,
+    '-PythonInstallLocation',
+    $PythonInstallLocation
+  )
 
   $Output = & $PowerShell.Source @InstallerArgs 2>&1
   $ExitCode = $LASTEXITCODE
@@ -408,7 +443,7 @@ function Install-OciCliWithOracleInstaller {
   $Command = Get-Command oci -ErrorAction SilentlyContinue
   if ($Command) { return $true }
 
-  $Errors.Add('OCI CLI PowerShell installer completed, but oci was not found in PATH. Expected locations include %USERPROFILE%\bin and Python Scripts directories.')
+  $Errors.Add('OCI CLI PowerShell installer completed, but oci was not found in PATH. Expected locations include C:\oci-cli-bin, C:\oci-cli\Scripts, %USERPROFILE%\bin, and Python Scripts directories.')
   return $false
 }
 
