@@ -99,7 +99,7 @@ the VIPs so the OS NIC starts answering for them.
 
 ## Deploy with OCI Resource Manager
 
-[![Deploy to Oracle Cloud](https://oci-resourcemanager-plugin.plugins.oci.oraclecloud.com/latest/deploy-to-oracle-cloud.svg)](https://cloud.oracle.com/resourcemanager/stacks/create?region=home&zipUrl=https://github.com/aszynkow/oci_vip_failover/raw/main/release/0.0.1/rm_vip.zip)
+[![Deploy to Oracle Cloud](https://oci-resourcemanager-plugin.plugins.oci.oraclecloud.com/latest/deploy-to-oracle-cloud.svg)](https://cloud.oracle.com/resourcemanager/stacks/create?region=home&zipUrl=https://github.com/aszynkow/oci_vip_failover/raw/main/release/0.0.2/rm_vip.zip)
 
 1. Click **Deploy to Oracle Cloud** above.
 2. In **Create Stack**, fill in:
@@ -191,7 +191,7 @@ security lists must allow outbound TCP 443.
 |   |-- variables.tf              # Inputs
 |   |-- schema.yaml               # ORM UI schema (LOV pickers, sections)
 |   `-- bootstrap.ps1.tmpl        # First-boot git clone + staging
-|-- release/0.0.1/rm_vip.zip      # Packaged stack referenced by the deploy button
+|-- release/0.0.2/rm_vip.zip      # Packaged stack referenced by the deploy button
 `-- vip_config.example.json       # Template VM-local config
 ```
 
