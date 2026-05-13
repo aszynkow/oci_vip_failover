@@ -1,0 +1,338 @@
+schemaVersion: 1.1.0
+version: "20260513"
+locale: "en"
+title: "OCI VIP Failover Windows VM"
+description: "Create a Windows Server 2022 Standard VM for OCI VIP failover in an existing VCN and subnet."
+
+variableGroups:
+  - title: "Target OCI Location"
+    variables:
+      - region
+      - compartment_ocid
+      - availability_domain
+      - vcn_ocid
+      - subnet_ocid
+  - title: "Windows VM"
+    variables:
+      - vm_display_name
+      - vm_shape
+      - vm_ocpus
+      - vm_memory_in_gbs
+      - boot_volume_size_gbs
+      - assign_public_ip
+      - hostname_label
+      - private_ip
+      - bootstrap_repo_url
+      - bootstrap_repo_ref
+  - title: "IAM"
+    variables:
+      - create_iam_resources
+      - create_dynamic_group
+      - existing_dynamic_group_name
+  - title: "Hidden Defaults"
+    visible: false
+    variables:
+      - nsg_ids
+      - skip_source_dest_check
+      - primary_vnic_display_name
+      - image_ocid
+      - fault_domain
+      - preserve_boot_volume
+      - management_agent_disabled
+      - monitoring_agent_disabled
+      - recovery_action
+      - disable_legacy_imds_endpoints
+      - defined_tags
+      - freeform_tags
+      - oci_auth
+      - oci_config_file_path
+      - oci_config_file_profile
+      - tenancy_ocid
+      - user_ocid
+      - fingerprint
+      - private_key_path
+      - windows_image_operating_system
+      - windows_image_operating_system_version
+      - vm_baseline_ocpu_utilization
+      - boot_volume_vpus_per_gb
+      - bootstrap_target_dir
+      - bootstrap_install_git
+
+variables:
+  region:
+    type: oci:identity:region:name
+    required: true
+    title: "Region"
+    description: "OCI region where the Windows VM will be created."
+
+  compartment_ocid:
+    type: oci:identity:compartment:id
+    required: true
+    title: "Target Compartment"
+    description: "Compartment where the Windows VM will be created."
+
+  availability_domain:
+    type: oci:identity:availabilitydomain:name
+    required: true
+    title: "Availability Domain"
+    description: "Availability domain for the Windows VM."
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+
+  vcn_ocid:
+    type: oci:core:vcn:id
+    required: true
+    title: "Target VCN"
+    description: "Existing VCN that contains the target subnet."
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+
+  subnet_ocid:
+    type: oci:core:subnet:id
+    required: true
+    title: "Target Subnet"
+    description: "Existing subnet for the Windows VM primary VNIC."
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+      vcnId: ${vcn_ocid}
+
+  vm_display_name:
+    type: string
+    required: true
+    title: "VM Display Name"
+    default: "vip-windows-2022"
+
+  vm_shape:
+    type: oci:core:instanceshape:name
+    required: true
+    title: "VM Shape"
+    default: "VM.Standard.E4.Flex"
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+      availabilityDomain: ${availability_domain}
+
+  vm_ocpus:
+    type: number
+    required: true
+    title: "OCPUs"
+    default: 2
+    minimum: 1
+
+  vm_memory_in_gbs:
+    type: number
+    required: true
+    title: "Memory in GB"
+    default: 16
+    minimum: 1
+
+  boot_volume_size_gbs:
+    type: number
+    required: true
+    title: "Boot Volume Size in GB"
+    default: 256
+    minimum: 256
+
+  assign_public_ip:
+    type: boolean
+    title: "Assign Public IP"
+    default: false
+
+  hostname_label:
+    type: string
+    title: "Hostname Label Override"
+    description: "Optional override. Leave blank to let Terraform derive hostname_label and hostname from VM Display Name after removing special characters."
+    required: false
+    default: ""
+
+  private_ip:
+    type: string
+    title: "Primary Private IP"
+    description: "Optional fixed primary private IP. Leave empty for automatic assignment."
+    required: false
+
+  bootstrap_repo_url:
+    type: string
+    required: true
+    title: "Bootstrap Git Repository URL"
+    description: "Repository cloned by the Windows first-boot script. Do not include credentials."
+    default: "https://github.com/aszynkow/oci_vip_failover"
+
+  bootstrap_repo_ref:
+    type: string
+    required: true
+    title: "Bootstrap Git Ref"
+    description: "Branch, tag, or commit checked out on first boot. Prefer a tag or commit for repeatable builds."
+    default: "main"
+
+  nsg_ids:
+    visible: false
+    type: list
+    valueType: string
+    title: "Network Security Groups"
+    description: "Optional NSG OCIDs for the primary VNIC."
+    required: false
+
+  skip_source_dest_check:
+    visible: false
+    type: boolean
+    title: "Skip Source/Destination Check"
+    default: false
+
+  primary_vnic_display_name:
+    visible: false
+    type: string
+    title: "Primary VNIC Display Name"
+    required: false
+
+  image_ocid:
+    visible: false
+    type: oci:core:image:id
+    title: "Image Override"
+    description: "Optional image override. Leave empty to use the latest Windows Server 2022 Standard platform image."
+    required: false
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+      operatingSystem: ${windows_image_operating_system}
+      operatingSystemVersion: ${windows_image_operating_system_version}
+      shape: ${vm_shape}
+
+  fault_domain:
+    visible: false
+    type: oci:identity:faultdomain:name
+    title: "Fault Domain"
+    required: false
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+      availabilityDomainName: ${availability_domain}
+
+  preserve_boot_volume:
+    visible: false
+    type: boolean
+    title: "Preserve Boot Volume on Destroy"
+    default: false
+
+  management_agent_disabled:
+    visible: false
+    type: boolean
+    title: "Disable Management Agent"
+    default: false
+
+  monitoring_agent_disabled:
+    visible: false
+    type: boolean
+    title: "Disable Monitoring Agent"
+    default: false
+
+  recovery_action:
+    visible: false
+    type: enum
+    title: "Recovery Action"
+    default: "RESTORE_INSTANCE"
+    enum:
+      - "RESTORE_INSTANCE"
+      - "STOP_INSTANCE"
+
+  disable_legacy_imds_endpoints:
+    visible: false
+    type: boolean
+    title: "Disable Legacy IMDS Endpoints"
+    default: true
+
+  bootstrap_target_dir:
+    visible: false
+    type: string
+    title: "Bootstrap Target Directory"
+    default: "C:\\vip-agent"
+
+  bootstrap_install_git:
+    visible: false
+    type: boolean
+    title: "Install Git During Bootstrap"
+    default: true
+
+  create_iam_resources:
+    type: boolean
+    title: "Create IAM Policy"
+    description: "Create a compartment policy granting manage virtual-network-family to the selected dynamic group."
+    default: true
+
+  create_dynamic_group:
+    type: boolean
+    title: "Create New Dynamic Group"
+    description: "Leave unchecked when the tenancy dynamic group limit is reached. Use an existing dynamic group name instead."
+    default: false
+
+  existing_dynamic_group_name:
+    type: string
+    title: "Existing Dynamic Group Name"
+    description: "Required when Create IAM Policy is checked and Create New Dynamic Group is unchecked. The group matching rule must include this Windows instance."
+    required: false
+
+  defined_tags:
+    visible: false
+    type: map
+    valueType: string
+    title: "Defined Tags"
+    required: false
+
+  freeform_tags:
+    visible: false
+    type: map
+    valueType: string
+    title: "Freeform Tags"
+    required: false
+
+  oci_auth:
+    type: string
+    visible: false
+    required: false
+
+  oci_config_file_path:
+    type: string
+    visible: false
+    required: false
+
+  oci_config_file_profile:
+    type: string
+    visible: false
+    required: false
+
+  tenancy_ocid:
+    type: string
+    visible: false
+    required: false
+
+  user_ocid:
+    type: string
+    visible: false
+    required: false
+
+  fingerprint:
+    type: string
+    visible: false
+    required: false
+
+  private_key_path:
+    type: string
+    visible: false
+    required: false
+
+  windows_image_operating_system:
+    type: string
+    visible: false
+    default: "Windows"
+
+  windows_image_operating_system_version:
+    type: string
+    visible: false
+    default: "Server 2022 Standard"
+
+  vm_baseline_ocpu_utilization:
+    type: string
+    visible: false
+    required: false
+
+  boot_volume_vpus_per_gb:
+    type: number
+    visible: false
+    default: 10

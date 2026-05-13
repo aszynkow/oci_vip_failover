@@ -20,6 +20,7 @@
   "auth_mode": "instance_principal",
   "oci_wait_secs": 60,
   "windows": {
-    "powershell_exe": "powershell"
+    "add_script": "windows_vms\\add_ip.ps1",
+    "remove_script": "windows_vms\\remove_ip.ps1"
   }
 }

@@ -5,3 +5,17 @@ __pycache__/
 *.log
 vip_config.json
 logs/
+backup/
+.terraform/
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+export_tfvars.sh
+terraform/rm_vip.zip
+rm_vip.zip
+!release/**/rm_vip.zip
+rm.sh

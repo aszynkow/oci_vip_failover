@@ -1,0 +1,260 @@
+#ps1_sysnative
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+$RepoUrl = '${repo_url}'
+$RepoRef = '${repo_ref}'
+$InstallRoot = '${install_root}'
+$InstallGit = ${install_git}
+
+$RepoDir = Join-Path $InstallRoot "repo"
+$AuxTarget = Join-Path $InstallRoot "aux_vm"
+$BootstrapDir = Join-Path $env:ProgramData "vip-agent\bootstrap"
+$LogFile = Join-Path $BootstrapDir "bootstrap.log"
+
+New-Item -ItemType Directory -Force -Path $InstallRoot, $AuxTarget, $BootstrapDir | Out-Null
+
+$env:GIT_TERMINAL_PROMPT = "0"
+$env:GCM_INTERACTIVE = "Never"
+$env:GIT_CONFIG_NOSYSTEM = "false"
+
+function Write-Log {
+  param([string]$Message)
+
+  $Line = "$(Get-Date -Format o) $Message"
+  Add-Content -LiteralPath $LogFile -Value $Line -Encoding UTF8
+  Write-Host $Line
+}
+
+function Add-PathCandidate {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { return }
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+
+  $CurrentParts = @($env:Path -split [System.IO.Path]::PathSeparator)
+  if ($CurrentParts -notcontains $Path) {
+    $env:Path = "$env:Path$([System.IO.Path]::PathSeparator)$Path"
+  }
+}
+
+function Wait-ForTcpEndpoint {
+  param(
+    [string]$HostName,
+    [int]$Port = 443,
+    [int]$Attempts = 18,
+    [int]$DelaySeconds = 10
+  )
+
+  for ($Attempt = 1; $Attempt -le $Attempts; $Attempt++) {
+    $Client = New-Object System.Net.Sockets.TcpClient
+    try {
+      $Async = $Client.BeginConnect($HostName, $Port, $null, $null)
+      if ($Async.AsyncWaitHandle.WaitOne(5000, $false)) {
+        $Client.EndConnect($Async)
+        Write-Log "TCP connectivity to $HostName`:$Port succeeded on attempt $Attempt."
+        return
+      }
+      Write-Log "TCP connectivity to $HostName`:$Port timed out on attempt $Attempt of $Attempts."
+    } catch {
+      Write-Log "TCP connectivity to $HostName`:$Port failed on attempt $Attempt of $Attempts`: $($_.Exception.Message)"
+    } finally {
+      try { $Client.Close() } catch { }
+    }
+
+    if ($Attempt -lt $Attempts) {
+      Start-Sleep -Seconds $DelaySeconds
+    }
+  }
+
+  throw "Could not reach $HostName`:$Port after $Attempts attempts. Check subnet route table, NAT/Internet Gateway, NSG/security list egress, and DNS."
+}
+
+function Refresh-GitPath {
+  Add-PathCandidate -Path (Join-Path $env:ProgramFiles "Git\cmd")
+  Add-PathCandidate -Path (Join-Path $env:ProgramFiles "Git\bin")
+
+  $ProgramFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+  if ($ProgramFilesX86) {
+    Add-PathCandidate -Path (Join-Path $ProgramFilesX86 "Git\cmd")
+    Add-PathCandidate -Path (Join-Path $ProgramFilesX86 "Git\bin")
+  }
+}
+
+function Get-GitCommand {
+  Refresh-GitPath
+  $Command = Get-Command git -ErrorAction SilentlyContinue
+  if ($Command) { return $Command.Source }
+  return $null
+}
+
+function Install-GitForWindows {
+  if (-not $InstallGit) {
+    throw "git.exe was not found and bootstrap_install_git is false."
+  }
+
+  Write-Log "git.exe not found. Installing Git for Windows."
+
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  $Headers = @{ "User-Agent" = "oci-vip-bootstrap" }
+
+  Write-Log "Resolving latest Git for Windows release from GitHub API."
+  try {
+    $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/git-for-windows/git/releases/latest" -Headers $Headers -TimeoutSec 60 -ErrorAction Stop
+  } catch {
+    throw "Failed to resolve latest Git for Windows release from GitHub. Check outbound internet access to api.github.com. $($_.Exception.Message)"
+  }
+  $Asset = $Release.assets |
+    Where-Object { $_.name -match "^Git-.*-64-bit\.exe$" } |
+    Sort-Object -Property name -Descending |
+    Select-Object -First 1
+
+  if (-not $Asset) {
+    throw "Could not find a 64-bit Git for Windows installer in the latest GitHub release."
+  }
+
+  $Installer = Join-Path $BootstrapDir $Asset.name
+  Write-Log "Selected Git installer: $($Asset.name)."
+  Write-Log "Downloading Git installer to $Installer."
+
+  try {
+    Invoke-WebRequest -Uri $Asset.browser_download_url -Headers $Headers -OutFile $Installer -TimeoutSec 300 -ErrorAction Stop
+  } catch {
+    throw "Failed to download Git installer. Check outbound internet access to github.com and release asset URLs. $($_.Exception.Message)"
+  }
+
+  if (-not (Test-Path -LiteralPath $Installer)) {
+    throw "Git installer download completed but file was not found at $Installer."
+  }
+
+  Write-Log "Running Git installer."
+  $Process = Start-Process `
+    -FilePath $Installer `
+    -ArgumentList @("/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-") `
+    -PassThru
+
+  if (-not $Process.WaitForExit(600000)) {
+    try { $Process.Kill() } catch { }
+    throw "Git for Windows installer did not finish within 10 minutes and was stopped."
+  }
+
+  Write-Log "Git installer exited with code $($Process.ExitCode)."
+
+  if ($Process.ExitCode -ne 0) {
+    throw "Git for Windows installer failed with exit code $($Process.ExitCode)."
+  }
+
+  Write-Log "Refreshing PATH after Git installation."
+  Refresh-GitPath
+}
+
+function Ensure-Git {
+  $Git = Get-GitCommand
+  if ($Git) {
+    Write-Log "Using git.exe at $Git."
+    return $Git
+  }
+
+  Install-GitForWindows
+
+  $Git = Get-GitCommand
+  if (-not $Git) {
+    throw "Git for Windows installation completed, but git.exe was not found in PATH."
+  }
+
+  Write-Log "Using git.exe at $Git."
+  return $Git
+}
+
+function Invoke-GitClone {
+  param([string]$Git)
+
+  $GitOutput = Join-Path $BootstrapDir "git-clone.log"
+  $MaxAttempts = 6
+
+  for ($Attempt = 1; $Attempt -le $MaxAttempts; $Attempt++) {
+    if (Test-Path -LiteralPath $RepoDir) {
+      Write-Log "Removing existing clone target $RepoDir."
+      Remove-Item -LiteralPath $RepoDir -Recurse -Force
+    }
+
+    Write-Log "Clone attempt $Attempt of $MaxAttempts`: $RepoUrl ref $RepoRef into $RepoDir. Git output: $GitOutput"
+    & $Git -c credential.helper= -c core.askPass= clone --depth 1 --branch $RepoRef $RepoUrl $RepoDir *> $GitOutput
+    $CloneExitCode = $LASTEXITCODE
+    if ($CloneExitCode -eq 0) {
+      Write-Log "Shallow git clone completed successfully on attempt $Attempt."
+      return
+    }
+
+    $GitDetails = if (Test-Path -LiteralPath $GitOutput) { (Get-Content -LiteralPath $GitOutput -Tail 20) -join " | " } else { "No git output file was written." }
+    Write-Log "Clone attempt $Attempt failed with exit code $CloneExitCode. Last git output: $GitDetails"
+
+    if ($Attempt -lt $MaxAttempts) {
+      Start-Sleep -Seconds ([Math]::Min(60, 10 * $Attempt))
+    }
+  }
+
+  if (Test-Path -LiteralPath $RepoDir) {
+    Remove-Item -LiteralPath $RepoDir -Recurse -Force
+  }
+
+  Write-Log "Shallow clone attempts failed. Retrying one full clone and checkout."
+  & $Git -c credential.helper= -c core.askPass= clone $RepoUrl $RepoDir *>> $GitOutput
+  $CloneExitCode = $LASTEXITCODE
+  if ($CloneExitCode -ne 0) {
+    $GitDetails = if (Test-Path -LiteralPath $GitOutput) { (Get-Content -LiteralPath $GitOutput -Tail 20) -join " | " } else { "No git output file was written." }
+    throw "git clone failed for $RepoUrl with exit code $CloneExitCode. Last git output: $GitDetails"
+  }
+
+  Write-Log "Full git clone completed successfully. Checking out $RepoRef."
+  & $Git -C $RepoDir checkout $RepoRef *>> $GitOutput
+  $CheckoutExitCode = $LASTEXITCODE
+  if ($CheckoutExitCode -ne 0) {
+    $GitDetails = if (Test-Path -LiteralPath $GitOutput) { (Get-Content -LiteralPath $GitOutput -Tail 20) -join " | " } else { "No git output file was written." }
+    throw "git checkout failed for ref $RepoRef with exit code $CheckoutExitCode. Last git output: $GitDetails"
+  }
+
+  Write-Log "Git checkout completed successfully."
+}
+function Copy-AuxVmFiles {
+  $AuxSource = Join-Path $RepoDir "aux_vm"
+  if (-not (Test-Path -LiteralPath $AuxSource)) {
+    throw "Cloned repository does not contain an aux_vm folder. Make sure aux_vm is committed and pushed to $RepoUrl ref $RepoRef."
+  }
+
+  $Files = @(Get-ChildItem -LiteralPath $AuxSource -File -Recurse -ErrorAction SilentlyContinue)
+  if ($Files.Count -eq 0) {
+    throw "Cloned aux_vm folder exists but contains no files. Make sure aux_vm scripts are committed and pushed."
+  }
+
+  Write-Log "Copying $($Files.Count) aux_vm file(s) from $AuxSource to $AuxTarget."
+  New-Item -ItemType Directory -Force -Path $AuxTarget | Out-Null
+  Copy-Item -Path (Join-Path $AuxSource "*") -Destination $AuxTarget -Recurse -Force
+
+  Get-ChildItem -LiteralPath $AuxTarget -Recurse -File -ErrorAction SilentlyContinue |
+    Unblock-File -ErrorAction SilentlyContinue
+
+  Write-Log "aux_vm copy completed."
+}
+
+try {
+  Write-Log "Bootstrap started."
+  Write-Log "Install root: $InstallRoot"
+  Write-Log "Repository: $RepoUrl"
+  Write-Log "Repository ref: $RepoRef"
+  Write-Log "Repository clone target: $RepoDir"
+  Write-Log "Aux VM script target: $AuxTarget"
+
+  Wait-ForTcpEndpoint -HostName "api.github.com"
+  Wait-ForTcpEndpoint -HostName "github.com"
+
+  $Git = Ensure-Git
+  Invoke-GitClone -Git $Git
+  Copy-AuxVmFiles
+
+  Write-Log "Bootstrap completed successfully. aux_vm files copied to $AuxTarget."
+} catch {
+  Write-Log "Bootstrap failed: $($_.Exception.Message)"
+  if ($_.ScriptStackTrace) { Write-Log "Stack trace: $($_.ScriptStackTrace)" }
+  throw
+}
