@@ -17,64 +17,50 @@ The repository ships three things:
 
 ## Sample architecture
 
-```text
-                              OCI VCN / subnet
-+----------------------------------------------------------------------------+
-|                                                                            |
-|   /==================== Resource Manager (ORM) scope ===================\  |
-|   ||                                                                   ||  |
-|   ||   +-----------------------+                                       ||  |
-|   ||   |        aux_vm         |   ORM delivers here:                  ||  |
-|   ||   |      (control)        |     * the Windows VM itself           ||  |
-|   ||   |                       |     * aux_vm\*.ps1 staged on it       ||  |
-|   ||   |  aux_vm\add_vnic_ip   |       (add_vnic_ip, remove_vnic_ip,   ||  |
-|   ||   |  aux_vm\remove_vnic_ip|        startup_takeover, common)      ||  |
-|   ||   |  aux_vm\startup_take..|                                       ||  |
-|   ||   +-----------+-----------+                                       ||  |
-|   ||               |                                                   ||  |
-|   ||               | OCI CLI  (instance principal auth)                ||  |
-|   ||               | create / delete / assign-private-ip               ||  |
-|   ||               v                                                   ||  |
-|   ||   +-------------------------------------------------+             ||  |
-|   ||   |              OCI control plane                  |             ||  |
-|   ||   |   secondary private IPs (VIPs) attached to      |             ||  |
-|   ||   |   exactly one VNIC at a time                    |             ||  |
-|   ||   +------------------+------------------+-----------+             ||  |
-|   ||                      |                  |                         ||  |
-|   ||      VIPs assigned   |                  |   VIPs not assigned     ||  |
-|   ||      to vm1 VNIC     |                  |   (standby)             ||  |
-|   ||                      v                  v                         ||  |
-|   ||         +-----------------------+   +-----------------------+     ||  |
-|   ||         |          vm1          |   |          vm2          |     ||  |
-|   ||         |       (workload)      |   |       (workload)      |     ||  |
-|   ||         |                       |   |                       |     ||  |
-|   ||         |  ORM delivers here:   |   |  ORM delivers here:   |     ||  |
-|   ||         |   * windows_vms\*.ps1 |   |   * windows_vms\*.ps1 |     ||  |
-|   ||         |     (add_ip / remove) |   |     (add_ip / remove) |     ||  |
-|   ||         |     -- scripts only --|   |     -- scripts only --|     ||  |
-|   ||         +-----------+-----------+   +-----------+-----------+     ||  |
-|   \==================|=======================|========================/  |
-|                      |                       |                            |
-|             binds VIPs locally       binds VIPs locally                   |
-|             when this VM is the      when this VM is the                  |
-|             active winner            active winner                        |
-|                      |                       |                            |
-|                      v                       v                            |
-|              [serves VIP traffic]      [idle / standby]                   |
-|                                                                           |
-+---------------------------------------------------------------------------+
+```mermaid
+flowchart TB
+    subgraph RM_AUX["Resource Manager scope: aux_vm (full VM + scripts)"]
+        direction TB
+        AUX["aux_vm<br/>Windows control VM"]
+        A_SCRIPTS["aux_vm scripts<br/>• add_vnic_ip.ps1<br/>• remove_vnic_ip.ps1<br/>• startup_takeover.ps1<br/>• oci_cli_common.ps1"]
+        AUX --- A_SCRIPTS
+    end
 
-Resource Manager scope (highlighted by /=====\):
-  * aux_vm   - full Windows VM AND the aux_vm\*.ps1 scripts staged on it.
-  * vm1, vm2 - ORM delivers ONLY the windows_vms\*.ps1 scripts; the workload
-               VMs themselves are the customer's existing Windows servers.
+    OCI[("OCI control plane<br/>secondary private IPs (VIPs)<br/>attached to one VNIC at a time")]
+
+    subgraph VM1["vm1 — customer-owned Windows workload VM"]
+        direction TB
+        VM1S["RM scope: windows_vms scripts<br/>• add_ip.ps1<br/>• remove_ip.ps1"]
+        VM1NIC["vm1 NIC<br/>binds VIPs when active"]
+        VM1S --- VM1NIC
+    end
+
+    subgraph VM2["vm2 — customer-owned Windows workload VM"]
+        direction TB
+        VM2S["RM scope: windows_vms scripts<br/>• add_ip.ps1<br/>• remove_ip.ps1"]
+        VM2NIC["vm2 NIC<br/>idle / standby until failover"]
+        VM2S --- VM2NIC
+    end
+
+    A_SCRIPTS -->|"OCI CLI (instance principal)<br/>create / delete /<br/>assign-private-ip"| OCI
+    OCI -->|"VIPs currently assigned"| VM1NIC
+    OCI -.->|"not assigned"| VM2NIC
+
+    classDef rm fill:#cfe8ff,stroke:#0066cc,stroke-width:2px,color:#000;
+    class RM_AUX,AUX,A_SCRIPTS,VM1S,VM2S rm;
 ```
 
-The control plane (`aux_vm`) is the only place that talks to OCI APIs. The
-workload VMs (`vm1`, `vm2`) only ever touch their own NIC. Exactly one of
-`vm1` / `vm2` owns the VIPs at any moment; failover is a move of the OCI
-private-IP resources from one VNIC to the other, followed by an OS-level bind
-on the new owner.
+**Resource Manager scope** (shaded blue in the diagram):
+
+- **`aux_vm`** — the full Windows VM **and** the `aux_vm\*.ps1` scripts staged
+  on it. This is the only place that talks to OCI APIs.
+- **`vm1`, `vm2`** — ORM delivers **only** the `windows_vms\*.ps1` scripts.
+  The workload VMs themselves are the customer's existing Windows servers and
+  only ever touch their own NIC.
+
+Exactly one of `vm1` / `vm2` owns the VIPs at any moment. Failover is a move
+of the OCI private-IP resources from one VNIC to the other, followed by an
+OS-level bind on the new owner.
 
 ---
 
