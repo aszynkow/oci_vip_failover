@@ -15,6 +15,69 @@ The repository ships three things:
 
 ---
 
+## Sample architecture
+
+```text
+                              OCI VCN / subnet
++----------------------------------------------------------------------------+
+|                                                                            |
+|   /==================== Resource Manager (ORM) scope ===================\  |
+|   ||                                                                   ||  |
+|   ||   +-----------------------+                                       ||  |
+|   ||   |        aux_vm         |   ORM delivers here:                  ||  |
+|   ||   |      (control)        |     * the Windows VM itself           ||  |
+|   ||   |                       |     * aux_vm\*.ps1 staged on it       ||  |
+|   ||   |  aux_vm\add_vnic_ip   |       (add_vnic_ip, remove_vnic_ip,   ||  |
+|   ||   |  aux_vm\remove_vnic_ip|        startup_takeover, common)      ||  |
+|   ||   |  aux_vm\startup_take..|                                       ||  |
+|   ||   +-----------+-----------+                                       ||  |
+|   ||               |                                                   ||  |
+|   ||               | OCI CLI  (instance principal auth)                ||  |
+|   ||               | create / delete / assign-private-ip               ||  |
+|   ||               v                                                   ||  |
+|   ||   +-------------------------------------------------+             ||  |
+|   ||   |              OCI control plane                  |             ||  |
+|   ||   |   secondary private IPs (VIPs) attached to      |             ||  |
+|   ||   |   exactly one VNIC at a time                    |             ||  |
+|   ||   +------------------+------------------+-----------+             ||  |
+|   ||                      |                  |                         ||  |
+|   ||      VIPs assigned   |                  |   VIPs not assigned     ||  |
+|   ||      to vm1 VNIC     |                  |   (standby)             ||  |
+|   ||                      v                  v                         ||  |
+|   ||         +-----------------------+   +-----------------------+     ||  |
+|   ||         |          vm1          |   |          vm2          |     ||  |
+|   ||         |       (workload)      |   |       (workload)      |     ||  |
+|   ||         |                       |   |                       |     ||  |
+|   ||         |  ORM delivers here:   |   |  ORM delivers here:   |     ||  |
+|   ||         |   * windows_vms\*.ps1 |   |   * windows_vms\*.ps1 |     ||  |
+|   ||         |     (add_ip / remove) |   |     (add_ip / remove) |     ||  |
+|   ||         |     -- scripts only --|   |     -- scripts only --|     ||  |
+|   ||         +-----------+-----------+   +-----------+-----------+     ||  |
+|   \==================|=======================|========================/  |
+|                      |                       |                            |
+|             binds VIPs locally       binds VIPs locally                   |
+|             when this VM is the      when this VM is the                  |
+|             active winner            active winner                        |
+|                      |                       |                            |
+|                      v                       v                            |
+|              [serves VIP traffic]      [idle / standby]                   |
+|                                                                           |
++---------------------------------------------------------------------------+
+
+Resource Manager scope (highlighted by /=====\):
+  * aux_vm   - full Windows VM AND the aux_vm\*.ps1 scripts staged on it.
+  * vm1, vm2 - ORM delivers ONLY the windows_vms\*.ps1 scripts; the workload
+               VMs themselves are the customer's existing Windows servers.
+```
+
+The control plane (`aux_vm`) is the only place that talks to OCI APIs. The
+workload VMs (`vm1`, `vm2`) only ever touch their own NIC. Exactly one of
+`vm1` / `vm2` owns the VIPs at any moment; failover is a move of the OCI
+private-IP resources from one VNIC to the other, followed by an OS-level bind
+on the new owner.
+
+---
+
 ## Table of Contents
 
 - [How it works (concept)](#how-it-works-concept)
