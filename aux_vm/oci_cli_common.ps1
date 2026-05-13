@@ -42,7 +42,7 @@ function Set-VipProperty {
   param(
     [object]$Object,
     [string]$Name,
-    [object]$Value
+    [AllowNull()][object]$Value
   )
 
   if ($Object -is [hashtable]) {
@@ -50,8 +50,9 @@ function Set-VipProperty {
     return
   }
 
-  if ($Object.PSObject.Properties[$Name]) {
-    $Object.$Name = $Value
+  $Property = $Object.PSObject.Properties[$Name]
+  if ($Property) {
+    $Property.Value = $Value
   } else {
     $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
   }
