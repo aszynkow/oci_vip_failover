@@ -15,7 +15,8 @@ function Get-VipProperty {
   )
 
   if ($null -eq $Object) { return $null }
-  if ($Object -is [hashtable]) {
+  if ($Object -is [System.Collections.IDictionary]) {
+    if ($Object.Contains($Name)) { return $Object[$Name] }
     if ($Object.ContainsKey($Name)) { return $Object[$Name] }
     return $null
   }
