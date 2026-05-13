@@ -337,9 +337,12 @@ function Refresh-OciCliPath {
       ForEach-Object { $Candidates.Add($_.FullName) }
   }
   if ($env:USERPROFILE) {
+    $Candidates.Add((Join-Path $env:USERPROFILE 'bin'))
     $Candidates.Add((Join-Path $env:USERPROFILE '.local\bin'))
+    $Candidates.Add((Join-Path $env:USERPROFILE 'oci-cli\Scripts'))
   }
   if ($env:HOME) {
+    $Candidates.Add((Join-Path $env:HOME 'bin'))
     $Candidates.Add((Join-Path $env:HOME '.local/bin'))
   }
 
@@ -351,8 +354,60 @@ function Refresh-OciCliPath {
   }
 }
 
+function Write-ExternalOutputToHost {
+  param([object[]]$Output)
+
+  foreach ($Line in @($Output)) {
+    if ($null -ne $Line) { Write-Host ([string]$Line) }
+  }
+}
+
+function Install-OciCliWithOracleInstaller {
+  param([System.Collections.Generic.List[string]]$Errors)
+
+  Write-Host "Trying Oracle OCI CLI PowerShell installer..." -ForegroundColor Yellow
+
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  } catch { }
+
+  $TempRoot = [System.IO.Path]::GetTempPath()
+  $InstallerPath = Join-Path $TempRoot 'install-oci-cli.ps1'
+  $InstallerUri = 'https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.ps1'
+
+  try {
+    Invoke-WebRequest -Uri $InstallerUri -OutFile $InstallerPath -UseBasicParsing -ErrorAction Stop | Out-Null
+  } catch {
+    $Errors.Add("OCI CLI PowerShell installer download failed: $($_.Exception.Message)")
+    return $false
+  }
+
+  $PowerShell = Get-Command powershell.exe -ErrorAction SilentlyContinue
+  if (-not $PowerShell) { $PowerShell = Get-Command powershell -ErrorAction SilentlyContinue }
+  if (-not $PowerShell) {
+    $Errors.Add('powershell.exe was not found to run the OCI CLI installer.')
+    return $false
+  }
+
+  $Output = & $PowerShell.Source -NoProfile -ExecutionPolicy Bypass -File $InstallerPath -AcceptAllDefaults 2>&1
+  $ExitCode = $LASTEXITCODE
+  Write-ExternalOutputToHost -Output $Output
+
+  if ($ExitCode -ne 0) {
+    $Errors.Add("OCI CLI PowerShell installer failed with exit code $ExitCode")
+    return $false
+  }
+
+  Refresh-OciCliPath
+  $Command = Get-Command oci -ErrorAction SilentlyContinue
+  if ($Command) { return $true }
+
+  $Errors.Add('OCI CLI PowerShell installer completed, but oci was not found in PATH. Expected locations include %USERPROFILE%\bin and Python Scripts directories.')
+  return $false
+}
+
 function Install-OciCli {
-  Write-Host "OCI CLI was not found in PATH. Installing oci-cli with pip..." -ForegroundColor Yellow
+  Write-Host "OCI CLI was not found in PATH. Installing oci-cli..." -ForegroundColor Yellow
 
   $Attempts = @(
     @{ Exe = 'python'; Args = @('-m', 'pip', 'install', '--user', 'oci-cli') },
@@ -365,15 +420,25 @@ function Install-OciCli {
     $Command = Get-Command $Attempt.Exe -ErrorAction SilentlyContinue
     if (-not $Command) { continue }
 
-    & $Command.Source @($Attempt.Args)
-    if ($LASTEXITCODE -eq 0) {
+    Write-Host "Trying: $($Attempt.Exe) $($Attempt.Args -join ' ')" -ForegroundColor Yellow
+    $Output = & $Command.Source @($Attempt.Args) 2>&1
+    $ExitCode = $LASTEXITCODE
+    Write-ExternalOutputToHost -Output $Output
+
+    if ($ExitCode -eq 0) {
       Refresh-OciCliPath
       return
     }
-    $Errors.Add("$($Attempt.Exe) $($Attempt.Args -join ' ') failed with exit code $LASTEXITCODE")
+    $Errors.Add("$($Attempt.Exe) $($Attempt.Args -join ' ') failed with exit code $ExitCode")
   }
 
-  $Detail = if ($Errors.Count -gt 0) { $Errors -join '; ' } else { 'No python, py, or python3 executable was found.' }
+  if ($Errors.Count -eq 0) {
+    $Errors.Add('No python, py, or python3 executable was found.')
+  }
+
+  if (Install-OciCliWithOracleInstaller -Errors $Errors) { return }
+
+  $Detail = $Errors -join '; '
   throw "Could not install OCI CLI automatically. $Detail"
 }
 
@@ -388,14 +453,14 @@ function Ensure-OciCli {
   }
 
   if ($NoInstall) {
-    throw "OCI CLI not found. Install it with: python -m pip install --user oci-cli"
+    throw "OCI CLI not found. Install it with the Oracle OCI CLI PowerShell installer or python -m pip install --user oci-cli"
   }
 
   Install-OciCli
   Refresh-OciCliPath
   $Command = Get-Command oci -ErrorAction SilentlyContinue
   if (-not $Command) {
-    throw "OCI CLI was installed but oci still is not in PATH. Open a new shell or add the Python Scripts directory to PATH."
+    throw "OCI CLI was installed but oci still is not in PATH. Open a new shell or add %USERPROFILE%\bin or the Python Scripts directory to PATH."
   }
 
   $script:OciCli = $Command.Source

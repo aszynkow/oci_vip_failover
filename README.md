@@ -183,9 +183,10 @@ with `add_vnic_ip.ps1 -WriteConfig` (see below).
 ## `aux_vm` scripts (OCI side)
 
 These scripts run on a Windows VM, but everything they change lives in **OCI**.
-They use OCI CLI under the hood; if the CLI isn't installed, they try to install
-it via Python/pip in the same run (use `-NoInstallOciCli` to disable that).
-All scripts accept `-DryRun` to preview without making changes.
+They use OCI CLI under the hood. If the CLI is not installed, they first try
+Python/pip when Python exists, then fall back to Oracle's PowerShell OCI CLI
+installer. Use `-NoInstallOciCli` to disable automatic installation. All scripts
+accept `-DryRun` to preview without making changes.
 
 ### `add_vnic_ip.ps1` — create / assign VIPs to a VNIC
 
@@ -374,9 +375,15 @@ This requires that the VM is in a Dynamic Group with `manage
 virtual-network-family` in the target compartment — which the ORM stack sets
 up for you when `create_iam_resources = true`.
 
-If the OCI CLI isn't installed, the scripts try to install it with Python/pip
-and re-run the failing call in the same execution. Pass `-NoInstallOciCli` to
-disable the auto-install behavior.
+If the OCI CLI is not installed, the scripts try to install it in the same run:
+
+1. `python -m pip install --user oci-cli` when Python is already present.
+2. Oracle's PowerShell OCI CLI installer when Python is missing.
+
+The PowerShell installer path needs outbound HTTPS to `raw.githubusercontent.com`
+and installs `oci` under the current user, usually with the launcher in
+`%USERPROFILE%\bin`. Pass `-NoInstallOciCli` to disable the auto-install
+behavior.
 
 ---
 
