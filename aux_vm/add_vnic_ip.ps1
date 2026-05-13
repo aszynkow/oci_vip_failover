@@ -77,13 +77,18 @@ foreach ($VipIp in $RequestedIps) {
   $Created.Add((Convert-PrivateIpSummary -PrivateIp $Response.data))
 }
 
+$ResultMode = if ($DryRun) { 'DRY_RUN_NO_CHANGES' } else { 'CREATE' }
+$RequestedIpArray = [string[]]$RequestedIps
+$CreatedArray = $Created.ToArray()
+$AlreadyPresentArray = $AlreadyPresent.ToArray()
+
 $Result = [ordered]@{
   vnic_id = $VnicId
-  requested_ips = @($RequestedIps)
-  created = @($Created)
-  already_present = @($AlreadyPresent)
+  requested_ips = $RequestedIpArray
+  created = $CreatedArray
+  already_present = $AlreadyPresentArray
   dry_run = [bool]$DryRun
-  mode = if ($DryRun) { 'DRY_RUN_NO_CHANGES' } else { 'CREATE' }
+  mode = $ResultMode
 }
 
 if ($WriteConfig) {
@@ -95,7 +100,12 @@ if ($WriteConfig) {
   }
 
   $ManagedByIp = Get-ConfiguredManagedVipMap -Config $Config
-  foreach ($Summary in @($AlreadyPresent) + @($Created)) {
+  foreach ($Summary in $AlreadyPresentArray) {
+    if ($Summary.ip_address -and $Summary.id) {
+      $ManagedByIp[$Summary.ip_address] = $Summary.id
+    }
+  }
+  foreach ($Summary in $CreatedArray) {
     if ($Summary.ip_address -and $Summary.id) {
       $ManagedByIp[$Summary.ip_address] = $Summary.id
     }
@@ -107,14 +117,15 @@ if ($WriteConfig) {
   if ($AuthMode) { Set-VipProperty -Object $Config -Name 'auth_mode' -Value $AuthMode }
   if ($OciConfigFile) { Set-VipProperty -Object $Config -Name 'oci_config_file' -Value $OciConfigFile }
   if ($DisplayNamePrefix) { Set-VipProperty -Object $Config -Name 'display_name_prefix' -Value $DisplayNamePrefix }
-  Set-VipProperty -Object $Config -Name 'secondary_ips' -Value @($AllIps)
+  Set-VipProperty -Object $Config -Name 'secondary_ips' -Value $AllIps.ToArray()
 
-  $ManagedVips = foreach ($ConfiguredIp in $AllIps) {
+  $ManagedVips = New-Object System.Collections.Generic.List[object]
+  foreach ($ConfiguredIp in $AllIps) {
     if ($ManagedByIp.ContainsKey($ConfiguredIp)) {
-      [ordered]@{ ip = $ConfiguredIp; private_ip_ocid = $ManagedByIp[$ConfiguredIp] }
+      [void]$ManagedVips.Add([ordered]@{ ip = $ConfiguredIp; private_ip_ocid = $ManagedByIp[$ConfiguredIp] })
     }
   }
-  Set-VipProperty -Object $Config -Name 'managed_vips' -Value @($ManagedVips)
+  Set-VipProperty -Object $Config -Name 'managed_vips' -Value $ManagedVips.ToArray()
 
   if ($DryRun) {
     $Result['would_write_config'] = [ordered]@{
