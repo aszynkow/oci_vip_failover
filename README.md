@@ -380,10 +380,11 @@ If the OCI CLI is not installed, the scripts try to install it in the same run:
 1. `python -m pip install --user oci-cli` when Python is already present.
 2. Oracle's PowerShell OCI CLI installer when Python is missing.
 
-The PowerShell installer path needs outbound HTTPS to `raw.githubusercontent.com`
-and installs `oci` under the current user, usually with the launcher in
-`%USERPROFILE%\bin`. Pass `-NoInstallOciCli` to disable the auto-install
-behavior.
+The PowerShell installer path needs outbound HTTPS to `raw.githubusercontent.com`.
+The script asks the installer to place Python under `%USERPROFILE%\oci-python`
+and usually places the `oci` launcher in `%USERPROFILE%\bin`. If Windows still
+blocks Python installation, run the same command from an elevated PowerShell once.
+Pass `-NoInstallOciCli` to disable the auto-install behavior.
 
 ---
 

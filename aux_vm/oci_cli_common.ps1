@@ -389,7 +389,13 @@ function Install-OciCliWithOracleInstaller {
     return $false
   }
 
-  $Output = & $PowerShell.Source -NoProfile -ExecutionPolicy Bypass -File $InstallerPath -AcceptAllDefaults 2>&1
+  $InstallerArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $InstallerPath, '-AcceptAllDefaults')
+  if ($env:USERPROFILE) {
+    $PythonInstallLocation = Join-Path $env:USERPROFILE 'oci-python'
+    $InstallerArgs += @('-PythonInstallLocation', $PythonInstallLocation)
+  }
+
+  $Output = & $PowerShell.Source @InstallerArgs 2>&1
   $ExitCode = $LASTEXITCODE
   Write-ExternalOutputToHost -Output $Output
 
