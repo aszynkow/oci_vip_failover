@@ -494,14 +494,14 @@ function Ensure-OciCli {
   }
 
   if ($NoInstall) {
-    throw "OCI CLI not found. Install it with the Oracle OCI CLI PowerShell installer or python -m pip install --user oci-cli"
+    throw "OCI CLI not found. Install it with the Oracle OCI CLI PowerShell installer or rerun without -NoInstallOciCli."
   }
 
   Install-OciCli
   Refresh-OciCliPath
   $Command = Get-Command oci -ErrorAction SilentlyContinue
   if (-not $Command) {
-    throw "OCI CLI was installed but oci still is not in PATH. Open a new shell or add %USERPROFILE%\bin or the Python Scripts directory to PATH."
+    throw "OCI CLI was installed but oci still is not in PATH. Open a new shell or add C:\oci-cli-bin or the Python Scripts directory to PATH."
   }
 
   $script:OciCli = $Command.Source
