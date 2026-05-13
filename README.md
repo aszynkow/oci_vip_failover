@@ -42,8 +42,9 @@ Failover therefore has two halves:
 | Move the IP **resource** to the new VM's VNIC | OCI control plane | `aux_vm` scripts (OCI CLI) |
 | Bind the IP to the **OS NIC** so Windows answers ARP/traffic | Inside Windows | `windows_vms` scripts |
 
-`startup_takeover.ps1` does both halves in one run. The other scripts let you
-do the halves independently for setup, repair, and teardown.
+`startup_takeover.ps1` performs only the OCI control-plane move. After it
+finishes, run `windows_vms\add_ip.ps1` locally on the Windows VM that now owns
+the VIPs so the OS NIC starts answering for them.
 
 ---
 
@@ -130,7 +131,7 @@ security lists must allow outbound TCP 443.
 |-- aux_vm/                       # OCI-side scripts (call OCI CLI)
 |   |-- add_vnic_ip.ps1           # Create / assign secondary private IPs on a VNIC
 |   |-- remove_vnic_ip.ps1        # Delete secondary private IPs from a VNIC
-|   |-- startup_takeover.ps1      # Failover: move VIP OCIDs to this VM + bind in OS
+|   |-- startup_takeover.ps1      # Failover: move VIP OCIDs to a target VNIC
 |   `-- oci_cli_common.ps1        # Shared OCI CLI install/config/JSON helpers
 |-- windows_vms/                  # OS-side scripts (touch local NIC only)
 |   |-- add_ip.ps1                # Bind VIPs to the local Windows NIC
@@ -170,8 +171,6 @@ Required / important starter keys:
 | `secondary_ips` | The shared VIP addresses to create/manage, e.g. `["10.200.0.213", "10.200.0.214"]`. |
 | `auth_mode` | Usually `instance_principal` on OCI VMs. |
 | `oci_wait_secs` | How long `startup_takeover.ps1` waits for OCI to reflect the move. |
-| `windows.add_script` | Relative path to the OS bind helper, usually `windows_vms\\add_ip.ps1`. |
-| `windows.remove_script` | Relative path to the OS unbind helper. |
 
 Do **not** add empty `managed_vips` placeholders to the starter file. The first
 `add_vnic_ip.ps1 -WriteConfig` run creates the OCI secondary private IPs and
@@ -230,31 +229,41 @@ C:\vip-agent\repo\aux_vm\remove_vnic_ip.ps1 -ConfigPath C:\vip-agent\vip_config.
 C:\vip-agent\repo\aux_vm\remove_vnic_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json -AllSecondary
 ```
 
-### `startup_takeover.ps1` — the actual failover
+### `startup_takeover.ps1` — OCI-side takeover
 
-Move the configured private IP OCIDs to **this** VM's primary VNIC, then call
-`windows_vms\add_ip.ps1` to bind them on the OS NIC. This is the script you
-run on the VM that is taking over service.
+Move the configured private IP OCIDs to a target VM's primary VNIC. This script
+is intended to run from the aux/control VM and does **not** touch Windows NIC
+configuration on either workload VM.
+
+Pass the target VNIC explicitly, or set `target_vnic_id` / `vnic_id` in the
+config to the VM that should receive the VIPs:
 
 ```powershell
-# Failover: OCI move + local Windows bind
-C:\vip-agent\repo\aux_vm\startup_takeover.ps1 -ConfigPath C:\vip-agent\vip_config.json
+# Aux VM: move VIP OCI resources to VM-B's primary VNIC
+C:\vip-agent\repo\aux_vm\startup_takeover.ps1 `
+  -ConfigPath C:\vip-agent\vip_config.json `
+  -VnicId <vm_b_primary_vnic_ocid>
+```
 
-# OCI move only, skip the OS bind (useful when binding is handled separately)
-C:\vip-agent\repo\aux_vm\startup_takeover.ps1 -ConfigPath C:\vip-agent\vip_config.json -SkipWindowsBind
+After OCI confirms the move, run the OS bind locally on VM-B:
+
+```powershell
+# VM-B: bind the VIPs on the local Windows NIC
+C:\vip-agent\repo\windows_vms\add_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json
 ```
 
 Implementation notes:
 
-- The VNIC to move VIPs **to** is auto-detected from the OCI instance metadata
-  service (IMDS); the script falls back to `-VnicId` or the config value if
-  IMDS is unreachable.
+- The target VNIC is taken from `-VnicId` first, then `target_vnic_id`, then
+  `vnic_id` in `vip_config.json`.
 - It calls `oci network vnic assign-private-ip --unassign-if-already-assigned`,
-  so OCI atomically detaches each VIP from its previous VNIC.
+  so OCI atomically detaches each VIP from its previous VNIC and attaches it to
+  the target VNIC.
 - It then polls until OCI reports every VIP on the target VNIC (default
   `oci_wait_secs = 60`).
-- It does **not** log in to the old VM — any stale Windows OS IPs on the loser
-  side remain until you clean them up with `windows_vms\remove_ip.ps1`.
+- It does **not** log in to either Windows VM. Bind VIPs on the winner with
+  `windows_vms\add_ip.ps1`; remove stale local bindings from the loser with
+  `windows_vms\remove_ip.ps1` when appropriate.
 
 ### `oci_cli_common.ps1` — shared helpers
 
@@ -272,8 +281,9 @@ network configuration on the NIC that owns the default gateway.
 
 ### `add_ip.ps1` — bind VIPs locally
 
-Used by `startup_takeover.ps1` after the OCI move, and runnable standalone when
-the OCI side is already correct but the OS state needs to be repaired.
+Run this locally on the Windows VM that owns the VIPs after the OCI move has
+completed. It is also useful when the OCI side is already correct but the OS
+state needs to be repaired.
 
 What it does:
 
@@ -337,15 +347,20 @@ C:\vip-agent\repo\windows_vms\remove_ip.ps1 -ConfigPath C:\vip-agent\vip_config.
                                 |
                                 v
             +-----------------------------------------------+
-            |  5. On VM-B: startup_takeover.ps1             |
-            |     a) OCI moves each VIP private IP to VM-B  |
-            |     b) Polls until OCI confirms the move      |
-            |     c) Calls windows_vms\add_ip.ps1 on VM-B   |
+            |  5. On aux VM: startup_takeover.ps1           |
+            |     -> OCI moves each VIP private IP to VM-B  |
+            |     -> polls until OCI confirms the move      |
             +-----------------------------------------------+
                                 |
                                 v
             +-----------------------------------------------+
-            |  6. (Optional) On VM-A when it returns:       |
+            |  6. On VM-B: windows_vms\add_ip.ps1          |
+            |     -> binds VIPs locally on VM-B             |
+            +-----------------------------------------------+
+                                |
+                                v
+            +-----------------------------------------------+
+            |  7. (Optional) On VM-A when it returns:       |
             |     windows_vms\remove_ip.ps1                 |
             |     -> drops stale OS bindings                |
             +-----------------------------------------------+
@@ -354,14 +369,14 @@ C:\vip-agent\repo\windows_vms\remove_ip.ps1 -ConfigPath C:\vip-agent\vip_config.
                                 |
                                 v
             +-----------------------------------------------+
-            |  7. remove_vnic_ip.ps1                        |
+            |  8. remove_vnic_ip.ps1                        |
             |     -> deletes the VIPs as OCI resources      |
             +-----------------------------------------------+
 ```
 
-Step 5 is the only step you run during an actual failover. Steps 1–3 are
-one-time setup; step 4 is just normal operation; steps 6–7 are repair and
-decommission.
+Steps 5 and 6 are the failover actions: first move the OCI private IPs from the
+aux VM, then bind the VIPs locally on VM-B. Steps 1-3 are one-time setup; step
+4 is normal operation; steps 7-8 are repair and decommission.
 
 ---
 

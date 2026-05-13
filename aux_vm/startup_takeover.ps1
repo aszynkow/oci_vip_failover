@@ -8,8 +8,6 @@ param(
   [string]$VnicId,
   [int]$WaitSecs,
   [int]$PollSecs = 2,
-  [switch]$SkipWindowsBind,
-  [string]$WindowsAddScript,
   [switch]$DryRun,
   [switch]$NoInstallOciCli
 )
@@ -17,60 +15,28 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'oci_cli_common.ps1')
 
-function Get-ImdsJson {
-  param([string]$Path)
-
-  $Headers = @{ Authorization = 'Bearer Oracle' }
-  return Invoke-RestMethod -Uri "http://169.254.169.254/opc/v2$Path" -Headers $Headers -TimeoutSec 5
-}
-
-function Get-CurrentVmIdentity {
-  $Instance = Get-ImdsJson -Path '/instance/'
-  $Vnics = @(Get-ImdsJson -Path '/vnics/')
-  if ($Vnics.Count -eq 0) { throw 'OCI instance metadata returned no VNICs.' }
-
-  $Primary = $Vnics | Where-Object {
-    (Get-JsonProperty -Object $_ -Names @('isPrimary', 'is-primary', 'is_primary')) -eq $true
-  } | Select-Object -First 1
-  if (-not $Primary) { $Primary = $Vnics[0] }
-
-  return [ordered]@{
-    instance_id = [string](Get-JsonProperty -Object $Instance -Names @('id'))
-    hostname = [System.Net.Dns]::GetHostName()
-    vnic_id = [string](Get-JsonProperty -Object $Primary -Names @('vnicId', 'vnic-id', 'vnic_id'))
-    source = 'imds'
-  }
-}
-
 function Get-TargetIdentity {
   param(
     [object]$Config,
     [string]$CliVnicId
   )
 
-  if ($CliVnicId) {
+  if (Test-VipValue -Value $CliVnicId) {
     return [ordered]@{
-      instance_id = ''
-      hostname = [System.Net.Dns]::GetHostName()
       vnic_id = $CliVnicId
       source = 'cli'
     }
   }
 
-  try {
-    return Get-CurrentVmIdentity
-  } catch {
-    $FallbackVnic = Get-ConfigValue -Config $Config -Keys @('vnic_id')
-    if (-not $FallbackVnic) {
-      throw "Could not read OCI instance metadata and no -VnicId or vnic_id was supplied. $($_.Exception.Message)"
-    }
+  $ConfigVnic = Get-ConfigValue -Config $Config -Keys @('target_vnic_id', 'vnic_id')
+  if (Test-VipValue -Value $ConfigVnic) {
     return [ordered]@{
-      instance_id = ''
-      hostname = [System.Net.Dns]::GetHostName()
-      vnic_id = $FallbackVnic
+      vnic_id = $ConfigVnic
       source = 'config'
     }
   }
+
+  throw 'Target VNIC ID is required. Supply -VnicId or set target_vnic_id/vnic_id in vip_config.json.'
 }
 
 function Get-CurrentAssignments {
@@ -161,31 +127,8 @@ function Move-Vips {
   }
 
   return [ordered]@{
-    actions = @($Actions)
+    actions = $Actions.ToArray()
     assignments = $Assignments
-  }
-}
-
-function Invoke-WindowsBind {
-  param(
-    [string]$ScriptPath,
-    [string]$ConfigPath,
-    [string[]]$Ips
-  )
-
-  if (-not (Test-Path -LiteralPath $ScriptPath)) {
-    throw "Windows add helper not found: $ScriptPath"
-  }
-
-  $Output = & $ScriptPath -ConfigPath $ConfigPath -SecondaryIps $Ips 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    throw "Windows add helper failed: $($Output -join [Environment]::NewLine)"
-  }
-
-  return [ordered]@{
-    mode = 'BOUND'
-    script = $ScriptPath
-    output = ($Output -join [Environment]::NewLine)
   }
 }
 
@@ -207,46 +150,20 @@ Ensure-OciCli -NoInstall:$NoInstallOciCli | Out-Null
 $BaseArgs = Get-OciBaseArgs -AuthMode $AuthMode -ConfigFile $OciConfigFile -Profile $Profile -Region $Region
 $MoveResult = Move-Vips -Vips $Vips -TargetVnicId $TargetVnicId -BaseArgs $BaseArgs -DryRun:$DryRun -TimeoutSecs $WaitSecs -PollSeconds $PollSecs
 
-$VipIps = @($Vips | ForEach-Object { $_.ip })
-$WindowsResult = $null
-if ($DryRun) {
-  $WindowsResult = [ordered]@{ mode = 'DRY_RUN_NO_CHANGES'; would_bind_ips = @($VipIps) }
-} elseif ($SkipWindowsBind) {
-  $WindowsResult = [ordered]@{ mode = 'SKIPPED' }
-} elseif (-not (Test-VipWindowsHost)) {
-  $WindowsResult = [ordered]@{ mode = 'SKIPPED_NON_WINDOWS_HOST' }
-} else {
-  $WindowsSection = Get-ConfigSection -Config $Config -Name 'windows'
-  $ConfiguredAddScript = Get-ConfigValue -CliValue $WindowsAddScript -Config $WindowsSection -Keys @('add_script')
-  $InstallRoot = Split-Path -Parent $PSScriptRoot
-  if (-not $ConfiguredAddScript) {
-    $CandidateAddScripts = @(
-      (Join-Path $InstallRoot 'windows_vms\add_ip.ps1'),
-      (Join-Path $InstallRoot 'repo\windows_vms\add_ip.ps1')
-    )
-    $ConfiguredAddScript = $CandidateAddScripts | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if (-not $ConfiguredAddScript) { $ConfiguredAddScript = $CandidateAddScripts[0] }
-  }
-
-  $ResolvedAddScript = Resolve-VipPath -Path $ConfiguredAddScript
-  if ($ConfiguredAddScript -and -not (Test-Path -LiteralPath $ResolvedAddScript) -and -not [System.IO.Path]::IsPathRooted($ConfiguredAddScript)) {
-    $CandidateAddScripts = @(
-      (Join-Path $InstallRoot $ConfiguredAddScript),
-      (Join-Path (Join-Path $InstallRoot 'repo') $ConfiguredAddScript)
-    )
-    $ResolvedCandidate = $CandidateAddScripts | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if ($ResolvedCandidate) { $ResolvedAddScript = $ResolvedCandidate }
-  }
-
-  $WindowsResult = Invoke-WindowsBind -ScriptPath $ResolvedAddScript -ConfigPath (Resolve-VipPath -Path $ConfigPath) -Ips $VipIps
-}
+$VipIpsList = New-Object System.Collections.Generic.List[string]
+foreach ($Vip in $Vips) { [void]$VipIpsList.Add([string]$Vip.ip) }
+$VipIps = $VipIpsList.ToArray()
+$LocalBindCommand = 'C:\vip-agent\repo\windows_vms\add_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json'
 
 Write-VipJsonResult -Result ([ordered]@{
-  mode = if ($DryRun) { 'DRY_RUN_NO_CHANGES' } else { 'TAKEOVER' }
+  mode = if ($DryRun) { 'DRY_RUN_NO_CHANGES' } else { 'OCI_TAKEOVER' }
   auth_mode = $AuthMode
   target = $Target
-  oci_actions = @($MoveResult.actions)
+  oci_actions = $MoveResult.actions
   oci_assignments = $MoveResult.assignments
-  windows = $WindowsResult
+  next_step = [ordered]@{
+    run_on_target_vm = $LocalBindCommand
+    vip_ips = $VipIps
+  }
 })
 
