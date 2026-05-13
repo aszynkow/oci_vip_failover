@@ -7,16 +7,6 @@
     "10.200.0.214"
   ],
   "display_name_prefix": "vip",
-  "managed_vips": [
-    {
-      "ip": "10.200.0.213",
-      "private_ip_ocid": "ocid1.privateip.oc1.ap-sydney-1.<VIP_213_PRIVATE_IP_OCID>"
-    },
-    {
-      "ip": "10.200.0.214",
-      "private_ip_ocid": "ocid1.privateip.oc1.ap-sydney-1.<VIP_214_PRIVATE_IP_OCID>"
-    }
-  ],
   "auth_mode": "instance_principal",
   "oci_wait_secs": 60,
   "windows": {

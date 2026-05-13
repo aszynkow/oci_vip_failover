@@ -161,22 +161,22 @@ Copy-Item C:\vip-agent\repo\vip_config.example.json C:\vip-agent\vip_config.json
 notepad C:\vip-agent\vip_config.json
 ```
 
-Required / important keys:
+Required / important starter keys:
 
 | Key | Purpose |
 | --- | --- |
-| `vnic_id` | **This VM's** primary VNIC OCID (different on each VM). |
+| `vnic_id` | **This VM's** primary VNIC OCID. For VM-B, change only this value to VM-B's primary VNIC. |
 | `region` | OCI region of the VNIC, for example `ap-sydney-1`. |
-| `secondary_ips` | The shared VIP addresses, e.g. `["10.200.0.213", "10.200.0.214"]`. |
-| `managed_vips[].ip` | The VIP address (matches an entry in `secondary_ips`). |
-| `managed_vips[].private_ip_ocid` | The OCI **private IP OCID** for that VIP — the thing that actually moves between VNICs. |
+| `secondary_ips` | The shared VIP addresses to create/manage, e.g. `["10.200.0.213", "10.200.0.214"]`. |
 | `auth_mode` | Usually `instance_principal` on OCI VMs. |
 | `oci_wait_secs` | How long `startup_takeover.ps1` waits for OCI to reflect the move. |
 | `windows.add_script` | Relative path to the OS bind helper, usually `windows_vms\\add_ip.ps1`. |
 | `windows.remove_script` | Relative path to the OS unbind helper. |
 
-The `private_ip_ocid` values are filled in for you when you create the VIPs
-with `add_vnic_ip.ps1 -WriteConfig` (see below).
+Do **not** add empty `managed_vips` placeholders to the starter file. The first
+`add_vnic_ip.ps1 -WriteConfig` run creates the OCI secondary private IPs and
+writes the generated `managed_vips[].private_ip_ocid` values back into
+`vip_config.json`. Those OCIDs are the resources that move during failover.
 
 ---
 
@@ -188,30 +188,34 @@ Python/pip when Python exists, then fall back to Oracle's PowerShell OCI CLI
 installer. Use `-NoInstallOciCli` to disable automatic installation. All scripts
 accept `-DryRun` to preview without making changes.
 
+Examples use the scripts inside `C:\vip-agent\repo\aux_vm` so `git pull`
+updates the commands immediately. The bootstrap also copies them to
+`C:\vip-agent\aux_vm` as a stable convenience path.
+
 ### `add_vnic_ip.ps1` — create / assign VIPs to a VNIC
 
 Create the OCI secondary private IP resources on this VM's VNIC. Use this once
 during initial setup on the first VM, and any time you add a new VIP.
 
+Start by editing only the starter values in `C:\vip-agent\vip_config.json`:
+`vnic_id`, `region`, and `secondary_ips`. Then run:
+
 ```powershell
-# Show what is already on the configured VNIC
-C:\vip-agent\aux_vm\add_vnic_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json -ShowAssigned
+# Optional: show what is already on the configured VNIC
+C:\vip-agent\repo\aux_vm\add_vnic_ip.ps1 `
+  -ConfigPath C:\vip-agent\vip_config.json `
+  -ShowAssigned
 
-# Greenfield: create the VIPs AND write a starter vip_config.json in one go
-C:\vip-agent\aux_vm\add_vnic_ip.ps1 `
-  -VnicId <active_vm_primary_vnic_ocid> `
-  -Ip 10.200.0.213,10.200.0.214 `
-  -Region ap-sydney-1 `
-  -AuthMode instance_principal `
-  -WriteConfig -WriteConfigPath C:\vip-agent\vip_config.json
-
-# Idempotent re-run from an existing config
-C:\vip-agent\aux_vm\add_vnic_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json
+# Create/find the VIPs from secondary_ips and write managed_vips OCIDs
+C:\vip-agent\repo\aux_vm\add_vnic_ip.ps1 `
+  -ConfigPath C:\vip-agent\vip_config.json `
+  -WriteConfig `
+  -WriteConfigPath C:\vip-agent\vip_config.json
 ```
 
-`-WriteConfig` populates `vnic_id`, `secondary_ips`, and the
-`managed_vips[].private_ip_ocid` values so the other scripts have something to
-work with.
+`-WriteConfig` populates `managed_vips[].private_ip_ocid`. For later changes,
+add the new address to `secondary_ips` and rerun the same `-WriteConfig`
+command. Existing VIPs are detected and kept.
 
 ### `remove_vnic_ip.ps1` — delete VIPs
 
@@ -220,10 +224,10 @@ when a VIP is being decommissioned.
 
 ```powershell
 # Delete the VIPs listed in the config
-C:\vip-agent\aux_vm\remove_vnic_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json
+C:\vip-agent\repo\aux_vm\remove_vnic_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json
 
 # Delete every secondary IP on the VNIC (primary is always skipped)
-C:\vip-agent\aux_vm\remove_vnic_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json -AllSecondary
+C:\vip-agent\repo\aux_vm\remove_vnic_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json -AllSecondary
 ```
 
 ### `startup_takeover.ps1` — the actual failover
@@ -234,10 +238,10 @@ run on the VM that is taking over service.
 
 ```powershell
 # Failover: OCI move + local Windows bind
-C:\vip-agent\aux_vm\startup_takeover.ps1 -ConfigPath C:\vip-agent\vip_config.json
+C:\vip-agent\repo\aux_vm\startup_takeover.ps1 -ConfigPath C:\vip-agent\vip_config.json
 
 # OCI move only, skip the OS bind (useful when binding is handled separately)
-C:\vip-agent\aux_vm\startup_takeover.ps1 -ConfigPath C:\vip-agent\vip_config.json -SkipWindowsBind
+C:\vip-agent\repo\aux_vm\startup_takeover.ps1 -ConfigPath C:\vip-agent\vip_config.json -SkipWindowsBind
 ```
 
 Implementation notes:
@@ -308,9 +312,10 @@ C:\vip-agent\repo\windows_vms\remove_ip.ps1 -ConfigPath C:\vip-agent\vip_config.
                                 |
                                 v
             +-----------------------------------------------+
-            |  2. On VM-A: add_vnic_ip.ps1 -WriteConfig     |
-            |     -> creates VIPs as OCI resources          |
-            |     -> writes vip_config.json (with OCIDs)    |
+            |  2. On VM-A: edit starter vip_config.json     |
+            |     -> set vnic_id, region, secondary_ips     |
+            |     -> run add_vnic_ip.ps1 -WriteConfig       |
+            |     -> writes managed_vips OCIDs              |
             +-----------------------------------------------+
                                 |
                                 v
