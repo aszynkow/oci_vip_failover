@@ -36,7 +36,11 @@ if ($ShowAssigned) {
   return
 }
 
-$RequestedIps = if ($AllSecondary) { @() } else { @(Get-SecondaryIps -CliIps $Ip -Config $Config) }
+if ($AllSecondary) {
+  $RequestedIps = @()
+} else {
+  $RequestedIps = Get-SecondaryIps -CliIps $Ip -Config $Config
+}
 $PrivateIpsByAddress = @{}
 foreach ($PrivateIp in $PrivateIps) {
   $Summary = Convert-PrivateIpSummary -PrivateIp $PrivateIp
@@ -47,11 +51,11 @@ $Targets = New-Object System.Collections.Generic.List[object]
 if ($AllSecondary) {
   foreach ($PrivateIp in $PrivateIps) {
     $Summary = Convert-PrivateIpSummary -PrivateIp $PrivateIp
-    if (-not $Summary.is_primary) { $Targets.Add($PrivateIp) }
+    if (-not $Summary.is_primary) { [void]$Targets.Add($PrivateIp) }
   }
 } else {
   foreach ($VipIp in $RequestedIps) {
-    if ($PrivateIpsByAddress.ContainsKey($VipIp)) { $Targets.Add($PrivateIpsByAddress[$VipIp]) }
+    if ($PrivateIpsByAddress.ContainsKey($VipIp)) { [void]$Targets.Add($PrivateIpsByAddress[$VipIp]) }
   }
 }
 
@@ -62,35 +66,52 @@ $NotFound = New-Object System.Collections.Generic.List[string]
 
 if (-not $AllSecondary) {
   foreach ($VipIp in $RequestedIps) {
-    if (-not $PrivateIpsByAddress.ContainsKey($VipIp)) { $NotFound.Add($VipIp) }
+    if (-not $PrivateIpsByAddress.ContainsKey($VipIp)) { [void]$NotFound.Add($VipIp) }
   }
 }
 
 foreach ($Target in $Targets) {
   $Summary = Convert-PrivateIpSummary -PrivateIp $Target
   if ($Summary.is_primary) {
-    $SkippedPrimary.Add($Summary)
+    [void]$SkippedPrimary.Add($Summary)
     continue
   }
 
   if ($DryRun) {
     $Summary['would_delete'] = $true
-    $WouldDelete.Add($Summary)
+    [void]$WouldDelete.Add($Summary)
     continue
   }
 
-  Invoke-OciJson -Arguments (@('network', 'private-ip', 'delete', '--private-ip-id', $Summary.id, '--force', '--output', 'json') + $BaseArgs) | Out-Null
-  $Deleted.Add($Summary)
+  $DeleteArgs = New-Object System.Collections.Generic.List[string]
+  foreach ($Arg in @('network', 'private-ip', 'delete', '--private-ip-id', $Summary.id, '--force', '--output', 'json')) {
+    [void]$DeleteArgs.Add([string]$Arg)
+  }
+  foreach ($Arg in $BaseArgs) { [void]$DeleteArgs.Add([string]$Arg) }
+  Invoke-OciJson -Arguments $DeleteArgs.ToArray() | Out-Null
+  [void]$Deleted.Add($Summary)
+}
+
+if ($AllSecondary) {
+  $RequestedResult = 'ALL_SECONDARY'
+} else {
+  $RequestedResult = [string[]]$RequestedIps
+}
+
+if ($DryRun) {
+  $ResultMode = 'DRY_RUN_NO_CHANGES'
+} else {
+  $ResultMode = 'DELETE'
 }
 
 Write-VipJsonResult -Result ([ordered]@{
   vnic_id = $VnicId
-  requested_ips = if ($AllSecondary) { 'ALL_SECONDARY' } else { @($RequestedIps) }
-  would_delete = @($WouldDelete)
-  deleted = @($Deleted)
-  not_found = @($NotFound)
-  skipped_primary = @($SkippedPrimary)
+  requested_ips = $RequestedResult
+  would_delete = $WouldDelete.ToArray()
+  deleted = $Deleted.ToArray()
+  not_found = $NotFound.ToArray()
+  skipped_primary = $SkippedPrimary.ToArray()
   dry_run = [bool]$DryRun
-  mode = if ($DryRun) { 'DRY_RUN_NO_CHANGES' } else { 'DELETE' }
+  mode = $ResultMode
 })
 
