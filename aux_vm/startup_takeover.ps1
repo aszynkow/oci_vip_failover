@@ -98,7 +98,11 @@ function Move-Vips {
   foreach ($Vip in $Vips) {
     $PrivateIp = Get-PrivateIpById -PrivateIpId $Vip.private_ip_ocid -BaseArgs $BaseArgs
     $CurrentVnicId = [string](Get-JsonProperty -Object $PrivateIp -Names @('vnic-id', 'vnic_id', 'vnicId'))
-    $ActionName = if ($CurrentVnicId -eq $TargetVnicId) { 'already_on_target' } else { 'move' }
+    if ($CurrentVnicId -eq $TargetVnicId) {
+      $ActionName = 'already_on_target'
+    } else {
+      $ActionName = 'move'
+    }
 
     if ($CurrentVnicId -ne $TargetVnicId) {
       if ($DryRun) {
@@ -109,7 +113,7 @@ function Move-Vips {
       }
     }
 
-    $Actions.Add([ordered]@{
+    [void]$Actions.Add([ordered]@{
       ip = $Vip.ip
       private_ip_ocid = $Vip.private_ip_ocid
       from_vnic_id = $CurrentVnicId
@@ -118,12 +122,12 @@ function Move-Vips {
     })
   }
 
-  $Assignments = if ($DryRun) {
-    Get-CurrentAssignments -Vips $Vips -BaseArgs $BaseArgs
+  if ($DryRun) {
+    $Assignments = Get-CurrentAssignments -Vips $Vips -BaseArgs $BaseArgs
   } elseif ($Moved) {
-    Wait-ForAssignments -Vips $Vips -TargetVnicId $TargetVnicId -BaseArgs $BaseArgs -TimeoutSecs $TimeoutSecs -PollSeconds $PollSeconds
+    $Assignments = Wait-ForAssignments -Vips $Vips -TargetVnicId $TargetVnicId -BaseArgs $BaseArgs -TimeoutSecs $TimeoutSecs -PollSeconds $PollSeconds
   } else {
-    Get-CurrentAssignments -Vips $Vips -BaseArgs $BaseArgs
+    $Assignments = Get-CurrentAssignments -Vips $Vips -BaseArgs $BaseArgs
   }
 
   return [ordered]@{
@@ -155,8 +159,14 @@ foreach ($Vip in $Vips) { [void]$VipIpsList.Add([string]$Vip.ip) }
 $VipIps = $VipIpsList.ToArray()
 $LocalBindCommand = 'C:\vip-agent\repo\windows_vms\add_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json'
 
+if ($DryRun) {
+  $ResultMode = 'DRY_RUN_NO_CHANGES'
+} else {
+  $ResultMode = 'OCI_TAKEOVER'
+}
+
 Write-VipJsonResult -Result ([ordered]@{
-  mode = if ($DryRun) { 'DRY_RUN_NO_CHANGES' } else { 'OCI_TAKEOVER' }
+  mode = $ResultMode
   auth_mode = $AuthMode
   target = $Target
   oci_actions = $MoveResult.actions
