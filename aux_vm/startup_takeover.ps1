@@ -108,7 +108,12 @@ function Move-Vips {
       if ($DryRun) {
         $ActionName = 'would_move'
       } else {
-        Invoke-OciJson -Arguments (@('network', 'vnic', 'assign-private-ip', '--vnic-id', $TargetVnicId, '--ip-address', $Vip.ip, '--unassign-if-already-assigned', '--output', 'json') + $BaseArgs) | Out-Null
+        $AssignArgs = New-Object System.Collections.Generic.List[string]
+        foreach ($Arg in @('network', 'vnic', 'assign-private-ip', '--vnic-id', $TargetVnicId, '--ip-address', $Vip.ip, '--unassign-if-already-assigned', '--output', 'json')) {
+          [void]$AssignArgs.Add([string]$Arg)
+        }
+        foreach ($Arg in $BaseArgs) { [void]$AssignArgs.Add([string]$Arg) }
+        Invoke-OciJson -Arguments $AssignArgs.ToArray() | Out-Null
         $Moved = $true
       }
     }
@@ -137,7 +142,7 @@ function Move-Vips {
 }
 
 $Config = Read-VipConfig -Path $ConfigPath
-$Vips = @(Get-ManagedVips -Config $Config)
+$Vips = Get-ManagedVips -Config $Config
 $Target = Get-TargetIdentity -Config $Config -CliVnicId $VnicId
 $TargetVnicId = [string](Get-VipProperty -Object $Target -Name 'vnic_id')
 if (-not $TargetVnicId) { throw 'Target VNIC ID is empty.' }

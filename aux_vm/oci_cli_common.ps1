@@ -268,9 +268,23 @@ function Ensure-OciInstancePrincipalConfig {
     [string]$Region
   )
 
-  $ConfigPath = if (Test-VipValue -Value $ConfigFile) { Resolve-VipPath -Path $ConfigFile } else { Get-DefaultOciConfigPath }
-  $ProfileName = if (Test-VipValue -Value $Profile) { $Profile } else { 'DEFAULT' }
-  $ConfigRegion = if (Test-VipValue -Value $Region) { $Region } else { Get-ImdsRegion }
+  if (Test-VipValue -Value $ConfigFile) {
+    $ConfigPath = Resolve-VipPath -Path $ConfigFile
+  } else {
+    $ConfigPath = Get-DefaultOciConfigPath
+  }
+
+  if (Test-VipValue -Value $Profile) {
+    $ProfileName = $Profile
+  } else {
+    $ProfileName = 'DEFAULT'
+  }
+
+  if (Test-VipValue -Value $Region) {
+    $ConfigRegion = $Region
+  } else {
+    $ConfigRegion = Get-ImdsRegion
+  }
   $Parent = Split-Path -Parent $ConfigPath
   if ($Parent -and -not (Test-Path -LiteralPath $Parent)) {
     New-Item -ItemType Directory -Path $Parent -Force | Out-Null
@@ -593,19 +607,26 @@ function Get-ManagedVips {
 
   $Managed = Get-VipProperty -Object $Config -Name 'managed_vips'
   if ($Managed) {
+    $ManagedItems = New-Object System.Collections.Generic.List[object]
+    if ($Managed -is [array]) {
+      foreach ($Item in $Managed) { [void]$ManagedItems.Add($Item) }
+    } else {
+      [void]$ManagedItems.Add($Managed)
+    }
+
     $Vips = New-Object System.Collections.Generic.List[object]
-    foreach ($Item in @($Managed)) {
+    foreach ($Item in $ManagedItems) {
       $Ip = Get-JsonProperty -Object $Item -Names @('ip', 'private_ip')
       $Ocid = Get-JsonProperty -Object $Item -Names @('private_ip_ocid', 'ocid')
       if (-not (Test-VipValue -Value $Ip) -or -not (Test-VipValue -Value $Ocid)) {
         throw 'Each managed_vips entry must include ip and private_ip_ocid.'
       }
-      $Vips.Add([pscustomobject]@{
+      [void]$Vips.Add([pscustomobject]@{
         ip = Normalize-VipIpv4 -IpAddress ([string]$Ip)
         private_ip_ocid = [string]$Ocid
       })
     }
-    return @($Vips)
+    return $Vips.ToArray()
   }
 
   $Ocids = $null
@@ -620,19 +641,26 @@ function Get-ManagedVips {
     throw 'Missing managed VIP private IP OCID. Add managed_vips or private_ip_ocids to vip_config.json.'
   }
 
-  $OcidList = if ($Ocids -is [array]) { @($Ocids | ForEach-Object { [string]$_ }) } else { Split-VipValues -Values @($Ocids) }
+  if ($Ocids -is [array]) {
+    $OcidItems = New-Object System.Collections.Generic.List[string]
+    foreach ($Ocid in $Ocids) { [void]$OcidItems.Add([string]$Ocid) }
+    $OcidList = $OcidItems.ToArray()
+  } else {
+    $OcidList = Split-VipValues -Values @($Ocids)
+  }
   $Ips = Get-SecondaryIps -Config $Config
   if ($Ips.Count -ne $OcidList.Count) {
     throw 'VIP config mismatch: secondary_ips count does not match private_ip_ocids count. Use managed_vips for explicit pairs.'
   }
 
-  $Vips = for ($Index = 0; $Index -lt $Ips.Count; $Index++) {
-    [pscustomobject]@{
+  $Vips = New-Object System.Collections.Generic.List[object]
+  for ($Index = 0; $Index -lt $Ips.Count; $Index++) {
+    [void]$Vips.Add([pscustomobject]@{
       ip = $Ips[$Index]
       private_ip_ocid = $OcidList[$Index]
-    }
+    })
   }
-  return @($Vips)
+  return $Vips.ToArray()
 }
 
 
