@@ -120,7 +120,10 @@ of a Dynamic Group that has the right OCI permissions.
 
 - If your tenancy has Dynamic Group quota: leave **Create New Dynamic Group**
   checked. The stack creates a DG matching this instance and a policy granting
-  `manage virtual-network-family` in the target compartment.
+  `manage virtual-network-family` in the target compartment. Creating a new
+  Dynamic Group is a tenancy-level IAM operation, so the user running the stack
+  must have tenancy administrator access or equivalent permissions to manage
+  Dynamic Groups.
 - If you have **hit the DG limit**: uncheck the box and provide
   `existing_dynamic_group_name`. The stack will only create the policy, and
   you are responsible for making sure the existing DG's matching rule includes
