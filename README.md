@@ -224,6 +224,95 @@ flowchart TD
     I -->|"Decommission VIPs"| K
 ```
 
+Step commands:
+
+1. Deploy ORM stack.
+   No PowerShell command. Use the **Deploy to Oracle Cloud** button or create an
+   OCI Resource Manager stack from `release/0.0.2/rm_vip.zip`. Run once for each
+   Windows VM you want to prepare.
+
+2. Create the starter config on the aux VM.
+
+   ```powershell
+   Copy-Item C:\vip-agent\repo\vip_config.example.json C:\vip-agent\vip_config.json
+   notepad C:\vip-agent\vip_config.json
+   ```
+
+   Set `vnic_id` to VM1's primary VNIC OCID, set `region`, and set
+   `secondary_ips`. Do not add `managed_vips` manually.
+
+3. Create/find the OCI VIP resources and populate `managed_vips`.
+
+   ```powershell
+   C:\vip-agent\repo\aux_vm\add_vnic_ip.ps1 `
+     -ConfigPath C:\vip-agent\vip_config.json `
+     -WriteConfig `
+     -WriteConfigPath C:\vip-agent\vip_config.json
+   ```
+
+4. Put the generated config where local Windows scripts need it.
+
+   ```powershell
+   Copy-Item C:\vip-agent\vip_config.json \\<VM1>\C$\vip-agent\vip_config.json
+   Copy-Item C:\vip-agent\vip_config.json \\<VM2>\C$\vip-agent\vip_config.json
+   ```
+
+   If you do not use admin shares, copy the same generated file by your normal
+   Windows file transfer method. Keep `managed_vips` identical everywhere.
+
+5. Bind the VIPs locally on VM1.
+
+   ```powershell
+   C:\vip-agent\repo\windows_vms\add_ip.ps1 `
+     -ConfigPath C:\vip-agent\vip_config.json
+   ```
+
+6. Fail over to VM2 from the aux VM.
+
+   ```powershell
+   C:\vip-agent\repo\aux_vm\startup_takeover.ps1 `
+     -ConfigPath C:\vip-agent\vip_config.json `
+     -VnicId <VM2_PRIMARY_VNIC_OCID>
+   ```
+
+7. Bind the VIPs locally on VM2.
+
+   ```powershell
+   C:\vip-agent\repo\windows_vms\add_ip.ps1 `
+     -ConfigPath C:\vip-agent\vip_config.json
+   ```
+
+8. Optional cleanup on VM1 after failover.
+
+   ```powershell
+   C:\vip-agent\repo\windows_vms\remove_ip.ps1 `
+     -ConfigPath C:\vip-agent\vip_config.json
+   ```
+
+9. Fail back to VM1 from the aux VM.
+
+   ```powershell
+   C:\vip-agent\repo\aux_vm\startup_takeover.ps1 `
+     -ConfigPath C:\vip-agent\vip_config.json `
+     -VnicId <VM1_PRIMARY_VNIC_OCID>
+   ```
+
+   Then run the VM1 local bind command again:
+
+   ```powershell
+   C:\vip-agent\repo\windows_vms\add_ip.ps1 `
+     -ConfigPath C:\vip-agent\vip_config.json
+   ```
+
+10. Decommission/delete the VIP OCI resources only when they are no longer
+    needed.
+
+    ```powershell
+    C:\vip-agent\repo\aux_vm\remove_vnic_ip.ps1 `
+      -ConfigPath C:\vip-agent\vip_config.json `
+      -VnicId <CURRENT_OWNER_PRIMARY_VNIC_OCID>
+    ```
+
 Config handling rules:
 
 - `add_vnic_ip.ps1 -WriteConfig` is the only normal setup step that creates or
