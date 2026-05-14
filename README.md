@@ -70,10 +70,10 @@ OS-level bind on the new owner.
 - [Deploy with OCI Resource Manager](#deploy-with-oci-resource-manager)
 - [What the Resource Manager stack delivers](#what-the-resource-manager-stack-delivers)
 - [Repository layout](#repository-layout)
+- [End-to-end logical flow](#end-to-end-logical-flow)
 - [VM-local configuration (`vip_config.json`)](#vm-local-configuration-vip_configjson)
 - [`aux_vm` scripts (OCI side)](#aux_vm-scripts-oci-side)
 - [`windows_vms` scripts (OS side)](#windows_vms-scripts-os-side)
-- [End-to-end logical flow](#end-to-end-logical-flow)
 - [OCI CLI authentication](#oci-cli-authentication)
 - [Terraform notes](#terraform-notes)
 
@@ -202,6 +202,48 @@ security lists must allow outbound TCP 443.
 
 ---
 
+## End-to-end logical flow
+
+```mermaid
+flowchart TD
+    A["1. Deploy ORM stack<br/>Windows VM, bootstrapped repo + scripts<br/>Run once per VM you need to prepare"]
+    B["2. Fresh starter config on aux VM<br/>vnic_id = VM1 primary VNIC<br/>secondary_ips = VIP list<br/>no managed_vips yet"]
+    C["3. Aux VM: add_vnic_ip.ps1 -WriteConfig<br/>Creates or finds OCI secondary private IPs on VM1 VNIC<br/>Writes managed_vips private_ip_ocid values"]
+    D["4. Use the same generated vip_config.json everywhere<br/>Copy it to VM1 and VM2 if Windows scripts run locally<br/>Do not edit managed_vips during failover or failback"]
+    E["5. VM1: windows_vms/add_ip.ps1<br/>Binds VIPs locally on active VM1"]
+    F{"Next action"}
+    G["6. Aux VM: startup_takeover.ps1 -VnicId VM2_VNIC<br/>Moves the same managed_vips OCI resources to VM2 VNIC<br/>Does not update vip_config.json"]
+    H["7. VM2: windows_vms/add_ip.ps1<br/>Binds VIPs locally on VM2"]
+    I["8. Optional VM1 cleanup<br/>windows_vms/remove_ip.ps1"]
+    J["Fail back: aux VM startup_takeover.ps1 -VnicId VM1_VNIC<br/>Then run windows_vms/add_ip.ps1 locally on VM1"]
+    K["Decommission only: aux VM remove_vnic_ip.ps1<br/>Deletes OCI private IP resources<br/>Old managed_vips OCIDs become invalid"]
+
+    A --> B --> C --> D --> E --> F
+    F -->|"Fail over to VM2"| G --> H --> I
+    I -->|"Fail back later"| J --> E
+    I -->|"Decommission VIPs"| K
+```
+
+Config handling rules:
+
+- `add_vnic_ip.ps1 -WriteConfig` is the only normal setup step that creates or
+  refreshes `managed_vips[].private_ip_ocid`.
+- `managed_vips` is durable state. Keep it unchanged for failover and failback;
+  those OCIDs identify the OCI private IP resources that move between VNICs.
+- `startup_takeover.ps1` does **not** update `vip_config.json`. Pass the target
+  VNIC explicitly with `-VnicId <target_primary_vnic_ocid>` for each failover or
+  failback.
+- `windows_vms\add_ip.ps1` and `windows_vms\remove_ip.ps1` only need
+  `secondary_ips`; they do not use `managed_vips` or talk to OCI.
+- If you add another VIP later, add the new address to `secondary_ips` and rerun
+  `add_vnic_ip.ps1 -WriteConfig` so the config gains the new `managed_vips`
+  OCID.
+- If you run `remove_vnic_ip.ps1` to delete VIPs from OCI, the old
+  `managed_vips` OCIDs are no longer valid. Recreate them with
+  `add_vnic_ip.ps1 -WriteConfig` before using failover again.
+
+---
+
 ## VM-local configuration (`vip_config.json`)
 
 Each VM has its own copy of the config. Create it from the template:
@@ -215,7 +257,7 @@ Required / important starter keys:
 
 | Key | Purpose |
 | --- | --- |
-| `vnic_id` | **This VM's** primary VNIC OCID. For VM-B, change only this value to VM-B's primary VNIC. |
+| `vnic_id` | Primary VNIC used for initial VIP creation or as a fallback target. For failover/failback, prefer passing the target with `startup_takeover.ps1 -VnicId`. |
 | `region` | OCI region of the VNIC, for example `ap-sydney-1`. |
 | `secondary_ips` | The shared VIP addresses to create/manage, e.g. `["10.200.0.213", "10.200.0.214"]`. |
 | `auth_mode` | Usually `instance_principal` on OCI VMs. |
@@ -358,74 +400,6 @@ owns in OCI.
 ```powershell
 C:\vip-agent\repo\windows_vms\remove_ip.ps1 -ConfigPath C:\vip-agent\vip_config.json
 ```
-
----
-
-## End-to-end logical flow
-
-```text
-            +-----------------------------------------------+
-            |  1. Deploy ORM stack (once per VM)            |
-            |     -> Windows VM, bootstrapped repo + scripts|
-            +-----------------------------------------------+
-                                |
-                                v
-            +-----------------------------------------------+
-            |  2. On VM-A: edit starter vip_config.json     |
-            |     -> set vnic_id, region, secondary_ips     |
-            |     -> run add_vnic_ip.ps1 -WriteConfig       |
-            |     -> writes managed_vips OCIDs              |
-            +-----------------------------------------------+
-                                |
-                                v
-            +-----------------------------------------------+
-            |  3. Copy vip_config.json to VM-B              |
-            |     -> change vnic_id to VM-B's primary VNIC  |
-            |     -> keep managed_vips OCIDs identical      |
-            +-----------------------------------------------+
-                                |
-                                v
-            +-----------------------------------------------+
-            |  4. Steady state: VIPs live on VM-A           |
-            |     -> windows_vms\add_ip.ps1 binds them      |
-            |        locally on VM-A                        |
-            |     -> apps serve traffic on VIPs             |
-            +-----------------------------------------------+
-                                |
-                  (VM-A unhealthy / planned switch)
-                                |
-                                v
-            +-----------------------------------------------+
-            |  5. On aux VM: startup_takeover.ps1           |
-            |     -> OCI moves each VIP private IP to VM-B  |
-            |     -> polls until OCI confirms the move      |
-            +-----------------------------------------------+
-                                |
-                                v
-            +-----------------------------------------------+
-            |  6. On VM-B: windows_vms\add_ip.ps1          |
-            |     -> binds VIPs locally on VM-B             |
-            +-----------------------------------------------+
-                                |
-                                v
-            +-----------------------------------------------+
-            |  7. (Optional) On VM-A when it returns:       |
-            |     windows_vms\remove_ip.ps1                 |
-            |     -> drops stale OS bindings                |
-            +-----------------------------------------------+
-                                |
-                       (decommission only)
-                                |
-                                v
-            +-----------------------------------------------+
-            |  8. remove_vnic_ip.ps1                        |
-            |     -> deletes the VIPs as OCI resources      |
-            +-----------------------------------------------+
-```
-
-Steps 5 and 6 are the failover actions: first move the OCI private IPs from the
-aux VM, then bind the VIPs locally on VM-B. Steps 1-3 are one-time setup; step
-4 is normal operation; steps 7-8 are repair and decommission.
 
 ---
 
